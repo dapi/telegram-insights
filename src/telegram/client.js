@@ -25,7 +25,24 @@ function normalizePeerType(peer) {
   if (!peer) return 'chat';
   if (peer.type === 'user' || peer.type === 'bot') return 'user';
   if (peer.type === 'channel') return 'channel';
+  if (peer.type === 'chat' && peer.chatType && peer.chatType !== 'group') return 'channel';
   return 'chat';
+}
+
+function extractTopicId(message) {
+  if (!message) return null;
+  if (typeof message.replyToMessage?.threadId === 'number') {
+    return message.replyToMessage.threadId;
+  }
+  if (message.action?.type === 'topic_created' && typeof message.id === 'number') {
+    return message.id;
+  }
+  const raw = message.raw ?? message;
+  const replyTo = raw?.replyTo;
+  if (replyTo?.replyToTopId) {
+    return replyTo.replyToTopId;
+  }
+  return null;
 }
 
 export function normalizeChannelId(channelId) {
@@ -49,7 +66,7 @@ export function normalizeChannelId(channelId) {
 }
 
 class TelegramClient {
-  constructor(apiId, apiHash, phoneNumber, sessionPath = './data/session.json') {
+  constructor(apiId, apiHash, phoneNumber, sessionPath = './data/session.json', options = {}) {
     this.apiId = coerceApiId(apiId);
     this.apiHash = sanitizeString(apiHash);
     this.phoneNumber = sanitizeString(phoneNumber);
@@ -60,14 +77,27 @@ class TelegramClient {
       fs.mkdirSync(dataDir, { recursive: true });
     }
 
+    this.updateEmitter = new EventEmitter();
+    this.updatesRunning = false;
+    this.rawUpdateHandler = null;
+    const userUpdates = options.updates ?? {};
+    const updatesConfig = {
+      ...userUpdates,
+      catchUp: userUpdates.catchUp ?? true,
+      onChannelTooLong: (channelId, diff) => {
+        if (typeof userUpdates.onChannelTooLong === 'function') {
+          userUpdates.onChannelTooLong(channelId, diff);
+        }
+        this.updateEmitter.emit('channelTooLong', { channelId, diff });
+      },
+    };
+
     this.client = new MtCuteClient({
       apiId: this.apiId,
       apiHash: this.apiHash,
       storage: this.sessionPath,
+      updates: updatesConfig,
     });
-
-    this.updateEmitter = new EventEmitter();
-    this.updatesRunning = false;
   }
 
   _isUnauthorizedError(error) {
@@ -254,7 +284,8 @@ class TelegramClient {
     };
   }
 
-  _serializeMessage(message, peer) {
+  _serializeMessage(message, peer = null) {
+    const resolvedPeer = peer ?? message?.chat ?? null;
     const id = typeof message.id === 'number' ? message.id : Number(message.id || 0);
     let dateSeconds = null;
     if (message.date instanceof Date) {
@@ -273,7 +304,18 @@ class TelegramClient {
     }
 
     const sender = message.sender || message.from || message.author;
-    const senderId = sender?.id ? sender.id.toString() : 'unknown';
+    let senderId = sender?.id ? sender.id.toString() : null;
+    if (!senderId) {
+      const rawFrom = message.fromId ?? message.raw?.fromId;
+      if (rawFrom && typeof rawFrom === 'object') {
+        senderId = (rawFrom.userId ?? rawFrom.channelId ?? rawFrom.chatId ?? 'unknown').toString();
+      } else if (rawFrom) {
+        senderId = rawFrom.toString();
+      } else {
+        senderId = 'unknown';
+      }
+    }
+    const topicId = extractTopicId(message);
 
     return {
       id,
@@ -281,8 +323,9 @@ class TelegramClient {
       message: textContent,
       text: textContent,
       from_id: senderId,
-      peer_type: normalizePeerType(peer),
-      peer_id: peer?.id?.toString?.() ?? 'unknown',
+      peer_type: normalizePeerType(resolvedPeer),
+      peer_id: resolvedPeer?.id?.toString?.() ?? 'unknown',
+      topic_id: topicId,
       raw: message.raw ?? null,
     };
   }
@@ -299,13 +342,17 @@ class TelegramClient {
   }
 
   async destroy() {
-    if (this.updatesRunning && this.client?.updates?.stop) {
+    if (this.updatesRunning) {
       try {
-        await this.client.updates.stop();
+        await this.client.stopUpdatesLoop();
       } catch (error) {
         console.warn('[warning] failed to stop updates loop:', error?.message || error);
       }
       this.updatesRunning = false;
+    }
+    if (this.rawUpdateHandler) {
+      this.client.onRawUpdate.remove(this.rawUpdateHandler);
+      this.rawUpdateHandler = null;
     }
     await this.client.destroy();
   }
@@ -315,27 +362,49 @@ class TelegramClient {
     return () => this.updateEmitter.off('update', listener);
   }
 
+  onChannelTooLong(listener) {
+    this.updateEmitter.on('channelTooLong', listener);
+    return () => this.updateEmitter.off('channelTooLong', listener);
+  }
+
   async startUpdates() {
     if (this.updatesRunning) {
       return;
     }
-
-    if (!this.client?.updates?.start) {
-      return;
-    }
-
     try {
-      await this.client.updates.start(async (update) => {
-        try {
+      if (!this.rawUpdateHandler) {
+        this.rawUpdateHandler = (update) => {
           this.updateEmitter.emit('update', update);
-        } catch (error) {
-          console.warn('[warning] update handler error:', error?.stack || error);
-        }
-      });
+        };
+        this.client.onRawUpdate.add(this.rawUpdateHandler);
+      }
+      await this.client.startUpdatesLoop();
       this.updatesRunning = true;
     } catch (error) {
       console.warn('[warning] failed to start updates loop:', error?.message || error);
     }
+  }
+
+  async listForumTopics(channelId, options = {}) {
+    await this.ensureLogin();
+    return this.client.getForumTopics(channelId, options);
+  }
+
+  async getTopicMessages(channelId, topicId, limit = 50, options = {}) {
+    await this.ensureLogin();
+    const results = await this.client.searchMessages({
+      chatId: channelId,
+      threadId: topicId,
+      limit,
+      query: options.query ?? '',
+    });
+    const messages = results.map((message) => this._serializeMessage(message, message.chat));
+
+    return {
+      total: results.total ?? messages.length,
+      next: results.next ?? null,
+      messages,
+    };
   }
 }
 
