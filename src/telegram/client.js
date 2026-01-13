@@ -316,6 +316,16 @@ class TelegramClient {
       }
     }
     const topicId = extractTopicId(message);
+    const senderUsername = typeof sender?.username === 'string' && sender.username ? sender.username : null;
+    let senderDisplayName = null;
+    if (typeof sender?.displayName === 'string' && sender.displayName.trim()) {
+      senderDisplayName = sender.displayName.trim();
+    } else {
+      const nameParts = [sender?.firstName, sender?.lastName].filter(Boolean);
+      senderDisplayName = nameParts.length ? nameParts.join(' ') : null;
+    }
+    const senderPeerType = sender ? normalizePeerType(sender) : null;
+    const senderIsBot = typeof sender?.isBot === 'boolean' ? sender.isBot : null;
 
     return {
       id,
@@ -323,6 +333,10 @@ class TelegramClient {
       message: textContent,
       text: textContent,
       from_id: senderId,
+      from_username: senderUsername,
+      from_display_name: senderDisplayName,
+      from_peer_type: senderPeerType,
+      from_is_bot: senderIsBot,
       peer_type: normalizePeerType(resolvedPeer),
       peer_id: resolvedPeer?.id?.toString?.() ?? 'unknown',
       topic_id: topicId,
