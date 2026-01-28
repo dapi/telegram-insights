@@ -122,6 +122,10 @@ class TelegramClient {
     }
   }
 
+  async isAuthorized() {
+    return this._isAuthorized();
+  }
+
   async _askQuestion(prompt) {
     const rl = readline.createInterface({
       input: process.stdin,
