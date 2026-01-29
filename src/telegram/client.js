@@ -338,6 +338,34 @@ class TelegramClient {
     });
   }
 
+  async _askHiddenQuestion(prompt) {
+    if (!process.stdin.isTTY) {
+      return this._askQuestion(prompt);
+    }
+
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+      terminal: true,
+    });
+    rl.stdoutMuted = false;
+    const writeOutput = rl._writeToOutput.bind(rl);
+    rl._writeToOutput = (stringToWrite) => {
+      if (!rl.stdoutMuted) {
+        writeOutput(stringToWrite);
+      }
+    };
+
+    return new Promise(resolve => {
+      rl.question(prompt, answer => {
+        rl.output.write('\n');
+        rl.close();
+        resolve(answer.trim());
+      });
+      rl.stdoutMuted = true;
+    });
+  }
+
   async login() {
     try {
       if (await this._isAuthorized()) {
@@ -353,7 +381,7 @@ class TelegramClient {
         phone: this.phoneNumber,
         code: async () => await this._askQuestion('Enter the code you received: '),
         password: async () => {
-          const value = await this._askQuestion('Enter your 2FA password (leave empty if not enabled): ');
+          const value = await this._askHiddenQuestion('Enter your 2FA password (leave empty if not enabled): ');
           return value.length ? value : undefined;
         },
       });
