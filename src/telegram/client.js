@@ -6,6 +6,19 @@ import path from 'path';
 import fs from 'fs';
 import { resolveStoreDir, resolveStorePaths } from './core/store.js';
 
+const timeoutPatchKey = Symbol.for('tgcli.timeoutPatch');
+if (!globalThis[timeoutPatchKey]) {
+  const originalSetTimeout = globalThis.setTimeout;
+  if (typeof originalSetTimeout === 'function') {
+    const wrapped = (handler, delay, ...args) => {
+      const safeDelay = Number.isFinite(delay) ? Math.max(0, delay) : 0;
+      return originalSetTimeout(handler, safeDelay, ...args);
+    };
+    globalThis.setTimeout = wrapped;
+  }
+  globalThis[timeoutPatchKey] = true;
+}
+
 const DEFAULT_STORE_DIR = resolveStoreDir();
 const { sessionPath: DEFAULT_SESSION_PATH } = resolveStorePaths(DEFAULT_STORE_DIR);
 const DEFAULT_DOWNLOAD_DIR = path.join(DEFAULT_STORE_DIR, 'downloads');
