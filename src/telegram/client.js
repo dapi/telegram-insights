@@ -1,9 +1,13 @@
 import { TelegramClient as MtCuteClient } from '@mtcute/node';
 import { InputMedia } from '@mtcute/core';
 import EventEmitter from 'events';
-import readline from 'readline';
-import path from 'path';
 import fs from 'fs';
+import { stat } from 'fs/promises';
+import os from 'os';
+import path from 'path';
+import readline from 'readline';
+import { Readable } from 'stream';
+import { nodeReadableToFuman } from '@fuman/node';
 import { resolveStoreDir, resolveStorePaths } from './core/store.js';
 
 const timeoutPatchKey = Symbol.for('tgcli.timeoutPatch');
@@ -37,6 +41,89 @@ const MIME_EXTENSION_MAP = {
   'application/pdf': '.pdf',
   'application/zip': '.zip',
 };
+
+const IS_TTY = typeof process === 'object' && Boolean(process.stdout?.isTTY);
+const LOG_BASE_FORMAT = IS_TTY ? '%s [%s] [%s%s\x1B[0m] ' : '%s [%s] [%s] ';
+const LOG_LEVEL_NAMES = IS_TTY
+  ? [
+      '',
+      '\x1B[31mERR\x1B[0m',
+      '\x1B[33mWRN\x1B[0m',
+      '\x1B[34mINF\x1B[0m',
+      '\x1B[36mDBG\x1B[0m',
+      '\x1B[35mVRB\x1B[0m',
+    ]
+  : ['', 'ERR', 'WRN', 'INF', 'DBG', 'VRB'];
+const LOG_TAG_COLORS = [6, 2, 3, 4, 5, 1].map((i) => `\x1B[3${i};1m`);
+const LOG_HANDLER = IS_TTY
+  ? (color, level, tag, fmt, args) => {
+      console.log(
+        LOG_BASE_FORMAT + fmt,
+        new Date().toISOString(),
+        LOG_LEVEL_NAMES[level],
+        LOG_TAG_COLORS[color],
+        tag,
+        ...args,
+      );
+    }
+  : (color, level, tag, fmt, args) => {
+      console.log(
+        LOG_BASE_FORMAT + fmt,
+        new Date().toISOString(),
+        LOG_LEVEL_NAMES[level],
+        tag,
+        ...args,
+      );
+    };
+
+async function normalizeUploadFile(file) {
+  if (typeof file === 'string') {
+    file = fs.createReadStream(file);
+  }
+  if (file instanceof fs.ReadStream) {
+    const filePath = file.path.toString();
+    const fileName = path.basename(filePath);
+    const fileSize = await stat(filePath).then((stats) => stats.size);
+    return {
+      file: nodeReadableToFuman(file),
+      fileName,
+      fileSize,
+    };
+  }
+  if (file instanceof Readable) {
+    return {
+      file: nodeReadableToFuman(file),
+    };
+  }
+  return null;
+}
+
+function createPlatform() {
+  return {
+    beforeExit: (callback) => {
+      if (typeof process === 'undefined') {
+        return () => {};
+      }
+      const handler = () => {
+        callback();
+      };
+      process.on('exit', handler);
+      return () => {
+        process.off('exit', handler);
+      };
+    },
+    log: LOG_HANDLER,
+    getDefaultLogLevel: () => {
+      const envLogLevel = Number.parseInt(process.env.MTCUTE_LOG_LEVEL ?? '', 10);
+      if (!Number.isNaN(envLogLevel)) {
+        return envLogLevel;
+      }
+      return null;
+    },
+    getDeviceModel: () => `Node.js/${process.version} (${os.type()} ${os.arch()})`,
+    normalizeFile: normalizeUploadFile,
+  };
+}
 
 function sanitizeString(value) {
   return typeof value === 'string' ? value : '';
@@ -307,6 +394,7 @@ class TelegramClient {
       apiId: this.apiId,
       apiHash: this.apiHash,
       storage: this.sessionPath,
+      platform: createPlatform(),
       updates: updatesConfig,
     });
   }
