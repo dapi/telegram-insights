@@ -158,13 +158,6 @@ export function clusterChunks(chunks, { threshold = 0.8, sameChatThreshold = 0.7
       centroids.push({ vector: [...v], members: [i], threads: new Set([key]) });
     }
   }
-  // Second pass: stories split only by the size cap or by arrival order merge
-  // when their centroids are as close as fragments across chats must be.
-  for (let a = 0; a < centroids.length; a += 1) {
-    for (let b = a + 1; b < centroids.length; b += 1) {
-      if (cosine(centroids[a].vector, centroids[b].vector) >= threshold) union(centroids[a].members[0], centroids[b].members[0]);
-    }
-  }
   const groups = new Map();
   chunks.forEach((chunk, i) => {
     const root = find(i);
