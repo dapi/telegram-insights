@@ -7,8 +7,12 @@ import { DEFAULT_TZ, dayRange, formatLocal, formatTime } from '../time.js';
 
 const STORY_SYSTEM = `Ты готовишь черновик ежедневной сводки по перепискам пользователя в Telegram.
 Тебе дан один сюжет: сообщения из одного или нескольких чатов. Верни JSON:
-{"title": "короткий заголовок сюжета", "summary": "2–4 предложения: что произошло", "open_questions": ["вопрос или расхождение, которое нельзя разрешить по сообщениям"]}
-Правила: опирайся только на сообщения; не додумывай; если сообщения противоречат друг другу — опиши это в open_questions; пиши по-русски.`;
+{"title": "короткий заголовок сюжета", "summary": "2–4 предложения: что произошло", "open_questions": []}
+Правила: опирайся только на сообщения; не додумывай; пиши по-русски.
+open_questions — обычно пустой список. Добавляй пункт (не больше двух) только если:
+- сообщения прямо противоречат друг другу (разные даты, суммы, решения), или
+- к владельцу аккаунта обратились с просьбой или вопросом, и в сообщениях нет его ответа.
+Не добавляй вопросы вида «неизвестно, ответил ли», «что имелось в виду», «почему так написали» и любые вопросы из любопытства.`;
 
 const OVERVIEW_SYSTEM = `По заголовкам и кратким описаниям сюжетов дня напиши общую картину дня: 2–4 предложения по-русски,
 только из приведённого текста, без новых фактов.`;
@@ -33,6 +37,51 @@ function normalizedHash(text) {
   const norm = String(text ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
   if (norm.length < 40) return null;
   return crypto.createHash('sha1').update(norm).digest('hex');
+}
+
+const firstAt = (chunk) => new Date(chunk.messages[0]?.sentAt ?? 0).getTime();
+
+// Bots post alerts, reminders and cron reports: a fragment is automated when
+// every message in it comes from a bot (Telegram bot usernames end in "bot")
+// or it is a bot chat where the owner did not write.
+export function isAutomated(chunk) {
+  const texts = chunk.messages.filter((m) => m.text);
+  if (!texts.length) return false;
+  if (texts.some((m) => m.own)) return false;
+  if (chunk.peerKind === 'bot') return true;
+  return texts.every((m) => /bot$/i.test(m.senderUsername ?? ''));
+}
+
+// Automated fragments do not become stories; each chat collapses into one line
+// with its most frequent message kinds (digits ignored, so "CPU 0.77" and
+// "CPU 0.81" count as one kind).
+export function summarizeAutomated(chunks, { maxChats = 6, maxKinds = 3 } = {}) {
+  const byChat = new Map();
+  for (const chunk of chunks) {
+    const entry = byChat.get(chunk.chatId) ?? { chat: chunk.title ?? String(chunk.chatId), messages: 0, lastAt: null, kinds: new Map() };
+    for (const m of chunk.messages) {
+      if (!m.text) continue;
+      entry.messages += 1;
+      const at = new Date(m.sentAt);
+      if (!entry.lastAt || at > entry.lastAt) entry.lastAt = at;
+      const line = String(m.text).split('\n').find((l) => l.trim()) ?? '';
+      const key = line.toLowerCase().replace(/\d+([.,]\d+)?/g, '#').replace(/\s+/g, ' ').trim().slice(0, 120);
+      const kind = entry.kinds.get(key) ?? { text: excerpt(line, 120), count: 0 };
+      kind.count += 1;
+      entry.kinds.set(key, kind);
+    }
+    byChat.set(chunk.chatId, entry);
+  }
+  return [...byChat.values()]
+    .filter((e) => e.messages > 0)
+    .sort((a, b) => b.messages - a.messages)
+    .slice(0, maxChats)
+    .map((e) => ({
+      chat: e.chat,
+      messages: e.messages,
+      lastAt: e.lastAt.toISOString(),
+      kinds: [...e.kinds.values()].sort((a, b) => b.count - a.count).slice(0, maxKinds),
+    }));
 }
 
 function chatTopic(chunk) {
@@ -68,6 +117,25 @@ export function clusterChunks(chunks, { threshold = 0.8, sameChatThreshold = 0.7
       else byHash.set(h, i);
     }
   });
+  // A reply belongs to the story of the message it answers.
+  const byMessage = new Map();
+  chunks.forEach((chunk, i) => chunk.messages.forEach((m) => byMessage.set(`${chunk.chatId}|${m.messageId}`, i)));
+  chunks.forEach((chunk, i) => {
+    for (const m of chunk.messages) {
+      const target = m.replyToId ? byMessage.get(`${chunk.chatId}|${m.replyToId}`) : undefined;
+      if (target !== undefined && target !== i) union(i, target);
+    }
+  });
+  // A fragment of only the owner's messages is a reaction (thanks, ok, answers
+  // later in the day): it joins the previous fragment of the same thread.
+  const lastByThread = new Map();
+  chunks.map((_, i) => i)
+    .sort((a, b) => firstAt(chunks[a]) - firstAt(chunks[b]))
+    .forEach((i) => {
+      const key = chatTopic(chunks[i]);
+      if (lastByThread.has(key) && chunks[i].messages.every((m) => m.own)) union(i, lastByThread.get(key));
+      lastByThread.set(key, i);
+    });
   const order = chunks.map((_, i) => i).sort((a, b) => chunks[b].messages.length - chunks[a].messages.length);
   const centroids = [];
   for (const i of order) {
@@ -172,7 +240,7 @@ async function loadChunks(pool, accountId, start, end) {
   const chunks = [];
   for (const row of rows) {
     const { rows: messages } = await pool.query(
-      `SELECT m.message_id, m.topic_id, m.sent_at, m.sender_name, m.text,
+      `SELECT m.message_id, m.topic_id, m.sent_at, m.sender_name, m.sender_username, m.reply_to_id, m.text,
               m.sender_id = m.account_id AS own, r.sender_id = m.account_id AS reply_to_me
        FROM archive.messages m
        LEFT JOIN archive.messages r ON r.account_id = m.account_id AND r.chat_id = m.chat_id AND r.message_id = m.reply_to_id
@@ -189,6 +257,8 @@ async function loadChunks(pool, accountId, start, end) {
         messageId: Number(m.message_id),
         sentAt: m.sent_at,
         sender: m.sender_name,
+        senderUsername: m.sender_username,
+        replyToId: m.reply_to_id === null ? null : Number(m.reply_to_id),
         text: m.text,
         own: Boolean(m.own),
         replyToMe: Boolean(m.reply_to_me),
@@ -214,7 +284,7 @@ async function summarizeStory(llm, story) {
     return {
       title: String(parsed.title ?? fallback.title).slice(0, 160),
       summary: parsed.summary ? String(parsed.summary) : null,
-      openQuestions: Array.isArray(parsed.open_questions) ? parsed.open_questions.map(String).filter(Boolean).slice(0, 5) : [],
+      openQuestions: Array.isArray(parsed.open_questions) ? parsed.open_questions.map(String).filter(Boolean).slice(0, 2) : [],
       generated: true,
     };
   } catch (error) {
@@ -240,7 +310,8 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
   );
 
   const chunks = await loadChunks(pool, account, start, end);
-  const sections = selectStories(clusterChunks(chunks), { maxOwn, maxAround });
+  const automated = summarizeAutomated(chunks.filter(isAutomated));
+  const sections = selectStories(clusterChunks(chunks.filter((c) => !isAutomated(c))), { maxOwn, maxAround });
   const stories = [...sections.own, ...sections.around];
   for (const story of stories) story.text = await summarizeStory(llm, story);
 
@@ -314,6 +385,15 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
       if (chunk.messages.length > 3) md.push(`  - ещё ${chunk.messages.length - 3} сообщ. в этом фрагменте`);
     }
   }
+  if (automated.length) {
+    md.push('## Автоматические уведомления');
+    md.push('');
+    for (const a of automated) {
+      md.push(`- «${a.chat}» — ${a.messages} сообщ., последнее ${formatLocal(a.lastAt, timeZone)}`);
+      for (const k of a.kinds) md.push(`  - ${k.count > 1 ? `×${k.count} ` : ''}${k.text}`);
+    }
+    md.push('');
+  }
   md.push('## Открытые вопросы и расхождения');
   md.push('');
   const questions = stories.flatMap((s, i) => s.text.openQuestions.map((q) => `- (${i + 1}) ${q}`));
@@ -376,6 +456,7 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
       archiveChatsAvailable: summary.chats.available,
       incompleteChats: incomplete.length,
     },
+    automated,
     limitations: [EDITS_LIMITATION, 'Секретные чаты не входят в архив.'],
   };
   return {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { clusterChunks, selectStories, storyPrompt, storyScore } from '../src/digest/digest.js';
+import { clusterChunks, isAutomated, selectStories, storyPrompt, storyScore, summarizeAutomated } from '../src/digest/digest.js';
 
 const at = (hh, mm = 0) => new Date(Date.UTC(2026, 9, 4, hh, mm));
 
@@ -99,5 +99,49 @@ describe('selectStories', () => {
     const { own, around } = selectStories(ranked, { maxOwn: 2, maxAround: 1 });
     expect(own.map((s) => s.n)).toEqual([1, 2]);
     expect(around.map((s) => s.n)).toEqual([4]);
+  });
+});
+
+describe('story linking', () => {
+  it('joins a reply to the story of the message it answers', () => {
+    const congrats = chunk('1', [1, 0, 0], ['С днём рождения!'], { hour: 9 });
+    const thanks = chunk('2', [0, 1, 0], ['спасибо'], { hour: 18 });
+    const answer = chunk('1', [0, 0, 1], ['спасибо большое'], { hour: 20 });
+    answer.messages[0].replyToId = congrats.messages[0].messageId;
+    const stories = clusterChunks([congrats, thanks, answer]);
+    const story = stories.find((s) => s.members.some((m) => m.messages[0].text === 'спасибо большое'));
+    expect(story.members.map((m) => m.messages[0].text)).toContain('С днём рождения!');
+  });
+
+  it("attaches the owner's later reaction to the previous fragment of the thread", () => {
+    const event = chunk('5', [1, 0, 0], ['Поздравляем с запуском!'], { hour: 9 });
+    const reaction = chunk('5', [0, 1, 0], ['спасибо'], { hour: 21 });
+    reaction.messages[0].own = true;
+    const stories = clusterChunks([event, reaction]);
+    expect(stories).toHaveLength(1);
+  });
+});
+
+describe('automated fragments', () => {
+  const alert = (text, hour) => {
+    const c = chunk('-100', null, [text], { hour, title: 'Алерты' });
+    c.messages[0].senderUsername = 'synthetic_alert_bot';
+    return c;
+  };
+
+  it('recognises bot posts but not a conversation with a bot', () => {
+    expect(isAutomated(alert('CPU 0.77', 9))).toBe(true);
+    const dialog = chunk('9', null, ['напомни завтра', 'Напомню.'], { title: 'Бот' });
+    dialog.peerKind = 'bot';
+    dialog.messages[0].own = true;
+    expect(isAutomated(dialog)).toBe(false);
+    expect(isAutomated(chunk('3', null, ['обычное сообщение']))).toBe(false);
+  });
+
+  it('collapses a chat of alerts into counted kinds', () => {
+    const [entry] = summarizeAutomated([alert('CPU 0.77 high\ndetails', 9), alert('CPU 0.81 high', 10), alert('MinIO replica lag', 11)]);
+    expect(entry).toMatchObject({ chat: 'Алерты', messages: 3 });
+    expect(entry.kinds[0]).toEqual({ text: 'CPU 0.77 high', count: 2 });
+    expect(entry.kinds[1]).toEqual({ text: 'MinIO replica lag', count: 1 });
   });
 });
