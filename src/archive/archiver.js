@@ -1,9 +1,12 @@
 import { AdaptiveLimiter } from './limiter.js';
 import { ArchiveStore } from './store.js';
 
-// The official "Telegram" service account (777000) sends login codes and new
-// login alerts. They must not reach the archive, the index or agents over MCP.
-export const ALWAYS_EXCLUDED_CHATS = ['777000'];
+// Telegram service accounts whose messages are secrets: login codes and new
+// login alerts (777000 "Telegram"), one-time codes of other services (489000
+// "Verification Codes") and bot API tokens (93372553 "BotFather"). Their ids are
+// the same for every account. Personal exclusions come from TI_EXCLUDED_CHATS;
+// `purge-excluded` removes what was stored before a chat became excluded.
+export const ALWAYS_EXCLUDED_CHATS = ['777000', '489000', '93372553'];
 
 const DEFAULTS = {
   windowDays: 14,

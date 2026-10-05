@@ -8,6 +8,7 @@ import { resolveSettings } from './client/settings.js';
 import { configPath, readConfigFile } from './user-config.js';
 import { coverageReport, STATE_LABELS } from './archive/status.js';
 import { createPool, migrate } from './db.js';
+import { purgeExcluded } from './archive/purge.js';
 import { buildDigest } from './digest/digest.js';
 import { Indexer } from './index/indexer.js';
 import { parseArchiveRef, messageLink, markdownLink } from './links.js';
@@ -124,6 +125,17 @@ export function buildProgram() {
     try {
       const applied = await migrate(pool, { log: (m) => console.log(m) });
       console.log(applied.length ? `Applied: ${applied.join(', ')}` : 'Schema is up to date');
+    } finally {
+      await pool.end();
+    }
+  });
+
+  program.command('purge-excluded').description('Delete stored messages and index chunks of excluded chats (owner role)').action(async () => {
+    const config = loadConfig();
+    const pool = createPool(requireUrl(config.db.owner, 'TI_OWNER_DATABASE_URL'), { max: 1 });
+    try {
+      const { messages, chunks } = await purgeExcluded(pool);
+      console.log(`Deleted ${messages} messages and ${chunks} index chunks of excluded chats`);
     } finally {
       await pool.end();
     }

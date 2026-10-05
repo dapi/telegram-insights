@@ -29,7 +29,7 @@ dsn() {
 
 command="${1:-}"
 case "$command" in
-  migrate)
+  migrate|purge-excluded)
     TI_OWNER_DATABASE_URL="$(dsn owner)"; export TI_OWNER_DATABASE_URL ;;
   run|login)
     # The session is a copy of tgcli's authorization, so use tgcli's API app.

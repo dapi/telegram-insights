@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { purgeExcluded } from '../src/archive/purge.js';
 import { coverageReport } from '../src/archive/status.js';
 import { createTestDatabase } from './helpers/db.js';
 import { floodWait, telegramError } from './helpers/fake-telegram.js';
@@ -393,6 +394,25 @@ describe('archive sequence contract', () => {
     expect(await archivedIds(pool, '777000')).toEqual([]);
     const { rows: [chat] } = await pool.query("SELECT excluded FROM archive.chats WHERE chat_id = '777000'");
     expect(chat.excluded).toBe(true);
+  });
+
+  it('purges what was stored before a chat became excluded', async () => {
+    const clock = virtualClock();
+    const tg = standardAccount(clock);
+    await drain(await startArchiver(pool, tg, clock));
+    expect((await archivedIds(pool, '502')).length).toBeGreaterThan(0);
+    const { rows: [{ account_id: accountId }] } = await pool.query('SELECT account_id FROM archive.accounts LIMIT 1');
+    await pool.query(
+      `INSERT INTO search.chunks (account_id, chat_id, bucket_start, part, message_ids, first_sent_at, last_sent_at, body, body_hash)
+       VALUES ($1, 502, now(), 0, '{1}', now(), now(), 'synthetic', 'h')`,
+      [accountId],
+    );
+    await drain(await startArchiver(pool, tg, clock, { excludedChats: ['502'] }));
+    const counts = await purgeExcluded(pool);
+    expect(counts.chunks).toBe(1);
+    expect(counts.messages).toBeGreaterThan(0);
+    expect(await archivedIds(pool, '502')).toEqual([]);
+    expect((await archivedIds(pool, '501')).length).toBeGreaterThan(0);
   });
 
   it('excludes chats only when configured explicitly', async () => {
