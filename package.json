@@ -15,11 +15,13 @@
     "test:db": "sh scripts/test-db.sh"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@mtcute/core": "0.32.1",
     "@mtcute/node": "0.32.1",
     "commander": "^12.1.0",
     "pg": "^8.13.1",
-    "qrcode-terminal": "^0.12.0"
+    "qrcode-terminal": "^0.12.0",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

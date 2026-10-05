@@ -342,6 +342,15 @@ export function buildProgram() {
       }
     });
 
+  program.command('mcp').description('Serve read-only MCP tools (search, context, chats, status) over stdio')
+    .action(async () => {
+      const config = loadConfig();
+      const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 3, applicationName: 'telegram-insights-mcp' });
+      const { runMcpStdio } = await import('./mcp.js');
+      const search = new SearchService({ pool, embedder: embedderFor(config), windowDays: config.archive.windowDays });
+      await runMcpStdio({ pool, search, windowDays: config.archive.windowDays });
+    });
+
   program.command('doctor').description('Check database roles, schema, models and the Telegram session (no message content)')
     .action(async () => {
       const config = loadConfig();

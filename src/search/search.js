@@ -20,7 +20,7 @@ export class SearchService {
     this.timeZone = timeZone;
   }
 
-  async textCandidates(accountId, query, { from, to, limit }) {
+  async textCandidates(accountId, query, { from, to, limit, chatId = null }) {
     const tsq = orQuery(query);
     if (!tsq) return [];
     const { rows } = await this.pool.query(
@@ -29,13 +29,14 @@ export class SearchService {
        FROM search.chunks, q
        WHERE account_id = $1 AND tsv @@ q.q
          AND ($3::timestamptz IS NULL OR last_sent_at >= $3) AND ($4::timestamptz IS NULL OR first_sent_at < $4)
+         AND ($6::bigint IS NULL OR chat_id = $6)
        ORDER BY score DESC, last_sent_at DESC LIMIT $5`,
-      [accountId, tsq, from, to, limit],
+      [accountId, tsq, from, to, limit, chatId],
     );
     return rows;
   }
 
-  async vectorCandidates(accountId, query, { from, to, limit }) {
+  async vectorCandidates(accountId, query, { from, to, limit, chatId = null }) {
     if (!this.embedder) return { rows: [], used: false, error: null };
     let vector;
     try {
@@ -48,18 +49,19 @@ export class SearchService {
        FROM search.chunks
        WHERE account_id = $1 AND embedding IS NOT NULL
          AND ($3::timestamptz IS NULL OR last_sent_at >= $3) AND ($4::timestamptz IS NULL OR first_sent_at < $4)
+         AND ($6::bigint IS NULL OR chat_id = $6)
        ORDER BY embedding <=> $2::vector LIMIT $5`,
-      [accountId, `[${vector.join(',')}]`, from, to, limit],
+      [accountId, `[${vector.join(',')}]`, from, to, limit, chatId],
     );
     return { rows, used: true, error: null };
   }
 
-  async search(query, { accountId = null, limit = 8, from = null, to = null, candidates = 50 } = {}) {
+  async search(query, { accountId = null, limit = 8, from = null, to = null, candidates = 50, chatId = null } = {}) {
     const account = await resolveAccountId(this.pool, accountId);
     if (!account) throw new Error('Archive is empty: no account has been archived yet');
     const [text, vector] = await Promise.all([
-      this.textCandidates(account, query, { from, to, limit: candidates }),
-      this.vectorCandidates(account, query, { from, to, limit: candidates }),
+      this.textCandidates(account, query, { from, to, limit: candidates, chatId }),
+      this.vectorCandidates(account, query, { from, to, limit: candidates, chatId }),
     ]);
     const fused = new Map();
     const key = (r) => `${r.chat_id}|${r.topic_key}|${new Date(r.bucket_start).toISOString()}|${r.part}`;
