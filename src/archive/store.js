@@ -85,13 +85,18 @@ export class ArchiveStore {
     const now = this.now();
     const windowStart = new Date(now.getTime() - windowDays * DAY_MS);
     return withTransaction(this.pool, async (client) => {
-      const payload = dialogs.map((d) => ({
+      // A dialog can be listed twice (pinned and in the main list); keep the first.
+      const unique = [...new Map(dialogs.map((d) => [String(d.chatId), d])).values()]
+        .sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
+      const firstRank = new Map();
+      for (const d of dialogs) if (!firstRank.has(String(d.chatId))) firstRank.set(String(d.chatId), d.rank);
+      const payload = unique.map((d) => ({
         chat_id: d.chatId,
         peer_kind: d.peerKind,
         title: clean(d.title ?? null),
         username: d.username ?? null,
         is_forum: Boolean(d.isForum),
-        dialog_rank: d.rank ?? null,
+        dialog_rank: firstRank.get(String(d.chatId)) ?? null,
         top_message_id: d.topMessageId ?? null,
         top_message_at: d.topMessageAt instanceof Date ? d.topMessageAt.toISOString() : (d.topMessageAt ?? null),
         excluded: excluded.has(String(d.chatId)),
@@ -139,7 +144,7 @@ export class ArchiveStore {
          WHERE account_id = $1 AND in_dialogs AND NOT (chat_id::text = ANY($2::text[]))`,
         [accountId, seen],
       );
-      return { total: dialogs.length, created, missing };
+      return { total: unique.length, created, missing };
     });
   }
 

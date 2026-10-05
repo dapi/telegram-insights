@@ -324,6 +324,23 @@ describe('errors and FLOOD_WAIT', () => {
   });
 });
 
+describe('dialog list quirks', () => {
+  it('tolerates a chat listed twice in the dialogs', async () => {
+    const clock = virtualClock();
+    const tg = standardAccount(clock);
+    const real = tg.listDialogs.bind(tg);
+    tg.listDialogs = async (opts) => {
+      const list = await real(opts);
+      return [list[0], ...list];
+    };
+    const archiver = await startArchiver(pool, tg, clock);
+    await drain(archiver);
+    const { summary } = await coverageReport(pool, { now: new Date(clock.now()) });
+    expect(summary.chats.total).toBe(tg.chats.size);
+    expect(summary.complete).toBe(true);
+  });
+});
+
 describe('archive sequence contract', () => {
   it('assigns unique increasing archive_seq in arrival order, not Telegram time', async () => {
     const clock = virtualClock();
