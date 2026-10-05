@@ -250,6 +250,20 @@ describe('new messages and gaps', () => {
 });
 
 describe('errors and FLOOD_WAIT', () => {
+  it('retries an invalid access hash before calling the chat unavailable', async () => {
+    const clock = virtualClock();
+    const tg = standardAccount(clock);
+    tg.failNext('getHistory', telegramError('CHANNEL_INVALID'), { chatId: '-1001000000002' });
+    const archiver = await startArchiver(pool, tg, clock);
+    await drain(archiver);
+    const { rows: [sync] } = await pool.query("SELECT state, error_code FROM archive.chat_sync WHERE chat_id = '-1001000000002'");
+    expect(sync.state).toBe('error');
+    clock.advance(3_600_000 + 1);
+    await drain(archiver);
+    const { chats } = await coverageReport(pool, { now: new Date(clock.now()) });
+    expect(chats.find((c) => c.chatId === '-1001000000002').state).toBe('loaded');
+  });
+
   it('passes the chat username to history requests for peer recovery', async () => {
     const clock = virtualClock();
     const tg = standardAccount(clock);

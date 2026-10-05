@@ -41,6 +41,13 @@ export const UNAVAILABLE_CODES = new Set([
   'INPUT_USER_DEACTIVATED',
 ]);
 
+// An invalid access hash (a min peer from an update can replace the full one
+// in the session cache) is repaired by the next dialogs refresh, so these codes
+// become "unavailable" only when they persist.
+export const RECOVERABLE_CODES = new Set(['CHANNEL_INVALID', 'PEER_ID_INVALID']);
+const RECOVERABLE_ATTEMPTS = 3;
+const RECOVERABLE_DELAY_MS = 3_600_000;
+
 export class ArchiveStore {
   constructor(pool, { now = () => new Date() } = {}) {
     this.pool = pool;
@@ -382,13 +389,16 @@ export class ArchiveStore {
 
   async markError(accountId, chatId, code) {
     const now = this.now();
-    const unavailable = UNAVAILABLE_CODES.has(code);
     const { rows } = await this.pool.query(
       'SELECT error_count FROM archive.chat_sync WHERE account_id = $1 AND chat_id = $2',
       [accountId, chatId],
     );
     const count = (rows[0]?.error_count ?? 0) + 1;
-    const delayMs = unavailable ? DAY_MS : Math.min(6 * 3_600_000, 30_000 * 2 ** Math.min(count - 1, 10));
+    const retrying = RECOVERABLE_CODES.has(code) && count < RECOVERABLE_ATTEMPTS;
+    const unavailable = UNAVAILABLE_CODES.has(code) && !retrying;
+    const delayMs = unavailable ? DAY_MS
+      : retrying ? RECOVERABLE_DELAY_MS
+        : Math.min(6 * 3_600_000, 30_000 * 2 ** Math.min(count - 1, 10));
     await this.pool.query(
       `UPDATE archive.chat_sync SET state = $3, error_code = $4, error_count = $5, next_attempt_at = $6,
               last_page_at = $7, updated_at = $7
