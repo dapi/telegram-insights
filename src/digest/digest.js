@@ -310,9 +310,12 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
 
   // 1. Waiting for the owner's reply (a longer lookback: an old request still counts).
   const since = new Date(end.getTime() - awaitingLookbackHours * 3_600_000);
-  const awaiting = await classifyAwaiting(llm, await loadAwaitingCandidates(pool, account, { since, end }), { now: Math.min(end.getTime(), now.getTime()) });
+  const stats = {};
+  const candidates = await loadAwaitingCandidates(pool, account, { since, end });
+  const awaiting = await classifyAwaiting(llm, candidates, { now: Math.min(end.getTime(), now.getTime()), stats });
   // 2. The owner's own promises in the period.
-  const promises = await extractPromises(llm, await loadOwnMessages(pool, account, { start, end }));
+  const ownMessages = await loadOwnMessages(pool, account, { start, end });
+  const promises = await extractPromises(llm, ownMessages, { stats });
   // 3. Unread groups and channels, 4. alarming bot notifications.
   const chunks = await loadChunks(pool, account, start, end);
   const alerts = alarmingNotifications(summarizeAutomated(chunks.filter(isAutomated)));
@@ -333,6 +336,7 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
   if (summary.indexer?.lag) partialReasons.push(`индекс отстаёт от архива на ${summary.indexer.lag} записей`);
   if (readState.known < readState.total) partialReasons.push(`отметки прочтения есть для ${readState.known} из ${readState.total} чатов`);
   if (!llm) partialReasons.push('модель не использовалась: обещания не извлечены, ответы отобраны по вопросительным знакам');
+  if (stats.modelFailures) partialReasons.push(`модель не дала разборчивого ответа в ${stats.modelFailures} из ${stats.modelCalls} запросов`);
 
   const link = (item) => markdownLink(formatLocal(item.lastAt ?? item.at, timeZone), { url: item.url, ref: item.ref });
   const md = [];
@@ -414,6 +418,7 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
     },
     alerts,
     readState,
+    diagnostics: { awaitingCandidates: candidates.length, ownMessages: ownMessages.length, modelCalls: stats.modelCalls ?? 0, modelFailures: stats.modelFailures ?? 0 },
     coverage: {
       chatsInPeriod: perChat.length,
       periodMessages,

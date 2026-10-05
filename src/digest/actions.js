@@ -26,11 +26,15 @@ function excerpt(text, max = 220) {
 
 const iso = (value) => (value instanceof Date ? value.toISOString() : new Date(value).toISOString());
 
-async function askJson(llm, system, prompt) {
+// `stats` counts model calls and unusable answers, so a silent model failure
+// shows up in the digest diagnostics instead of looking like "nothing found".
+async function askJson(llm, system, prompt, stats = {}) {
   if (!llm) return null;
+  stats.modelCalls = (stats.modelCalls ?? 0) + 1;
   try {
     return JSON.parse(await llm.complete({ system, prompt, json: true }));
   } catch {
+    stats.modelFailures = (stats.modelFailures ?? 0) + 1;
     return null;
   }
 }
@@ -81,14 +85,14 @@ export async function loadAwaitingCandidates(pool, accountId, { since, end, maxT
     .slice(0, maxThreads);
 }
 
-export async function classifyAwaiting(llm, threads, { now }) {
+export async function classifyAwaiting(llm, threads, { now, stats = {} }) {
   const result = [];
   for (const thread of threads) {
     const last = thread.messages.at(-1);
     const prompt = thread.messages.slice(-12)
       .map((m) => `[${iso(m.sentAt).slice(11, 16)}] ${m.sender ?? 'неизвестный'}: ${String(m.text).slice(0, 600)}`)
       .join('\n');
-    const parsed = await askJson(llm, AWAITING_SYSTEM, `Чат «${thread.title ?? thread.chatId}»:\n${prompt}`);
+    const parsed = await askJson(llm, AWAITING_SYSTEM, `Чат «${thread.title ?? thread.chatId}»:\n${prompt}`, stats);
     // Without a model only explicit questions count.
     const needsReply = parsed ? Boolean(parsed.needs_reply) : thread.messages.some((m) => m.text.includes('?'));
     if (!needsReply) continue;
@@ -127,7 +131,7 @@ export async function loadOwnMessages(pool, accountId, { start, end }) {
   }));
 }
 
-export async function extractPromises(llm, messages, { budget = 9000, max = 10 } = {}) {
+export async function extractPromises(llm, messages, { budget = 9000, max = 10, stats = {} } = {}) {
   if (!llm || !messages.length) return [];
   const lines = [];
   let used = 0;
@@ -140,7 +144,7 @@ export async function extractPromises(llm, messages, { budget = 9000, max = 10 }
     used += line.length + 8;
   }
   shown.forEach((m, i) => lines.push(`[${i + 1}] «${m.chat}» ${iso(m.sentAt).slice(11, 16)}: ${String(m.text).slice(0, 400)}`));
-  const parsed = await askJson(llm, PROMISES_SYSTEM, lines.join('\n'));
+  const parsed = await askJson(llm, PROMISES_SYSTEM, lines.join('\n'), stats);
   if (!Array.isArray(parsed?.promises)) return [];
   return parsed.promises
     .map((p) => ({ p, m: shown[Number(p.i) - 1] }))
