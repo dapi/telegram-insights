@@ -4,13 +4,14 @@ import { Command } from 'commander';
 
 import { Archiver } from './archive/archiver.js';
 import { createBackend } from './client/backend.js';
-import { configPath, readConfigFile, resolveSettings } from './client/settings.js';
+import { resolveSettings } from './client/settings.js';
+import { configPath, readConfigFile } from './user-config.js';
 import { coverageReport, STATE_LABELS } from './archive/status.js';
 import { createPool, migrate } from './db.js';
 import { buildDigest } from './digest/digest.js';
 import { Indexer } from './index/indexer.js';
 import { parseArchiveRef, messageLink, markdownLink } from './links.js';
-import { OllamaChat, OllamaEmbedder } from './llm/ollama.js';
+import { createChat, createEmbedder } from './llm/models.js';
 import { answerQuestion } from './search/ask.js';
 import { EDITS_LIMITATION, SearchService } from './search/search.js';
 import { loadConfig, validateTelegramConfig } from './telegram/config.js';
@@ -43,13 +44,11 @@ async function makeGateway(config, loginOptions = {}) {
 }
 
 function embedderFor(config) {
-  if (!config.models.embeddingsEnabled) return null;
-  return new OllamaEmbedder({ baseUrl: config.models.baseUrl, model: config.models.embedModel, approvedHosts: config.models.approvedHosts });
+  return createEmbedder(config.models);
 }
 
 function chatFor(config, enabled = true) {
-  if (!enabled) return null;
-  return new OllamaChat({ baseUrl: config.models.baseUrl, model: config.models.chatModel, approvedHosts: config.models.approvedHosts });
+  return enabled ? createChat(config.models) : null;
 }
 
 async function waitForFile(file, timeoutMs = 10 * 60_000) {
@@ -104,7 +103,8 @@ export function buildProgram() {
     .option('--mcp-command <cmd>', 'any local command that serves MCP on stdio (env TI_MCP_COMMAND)')
     .option('--db-url <url>', 'reader PostgreSQL URL for direct mode (env TI_READER_DATABASE_URL)')
     .option('--db-url-pass <entry>', 'pass entry with the reader PostgreSQL URL (env TI_READER_DATABASE_URL_PASS)')
-    .option('--ollama-url <url>', 'local Ollama for query embeddings in direct mode (env TI_OLLAMA_URL)')
+    .option('--llm-router-url <url>', 'OpenAI-compatible LLM router for embeddings and answers (env LLM_ROUTER_BASE_URL)')
+    .option('--ollama-url <url>', 'Ollama URL when TI_MODEL_PROVIDER=ollama (env TI_OLLAMA_URL)')
     .option('--direct', 'ignore remote/MCP settings and query PostgreSQL directly')
     .option('--config <path>', 'user config file (env TELEGRAM_INSIGHTS_CONFIG)');
 
@@ -306,6 +306,7 @@ export function buildProgram() {
         if (global.mcpCommand) next.mcpCommand = global.mcpCommand;
         if (global.dbUrlPass) next.databaseUrlPass = global.dbUrlPass;
         if (global.ollamaUrl) next.ollamaUrl = global.ollamaUrl;
+        if (global.llmRouterUrl) next.llmRouterUrl = global.llmRouterUrl;
         if (global.dbUrl) throw new Error('Do not store database URLs with passwords in the config; use --db-url-pass <pass entry>');
         fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
         fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
@@ -317,7 +318,7 @@ export function buildProgram() {
         mode: s.mode,
         command: s.mode === 'mcp' ? s.command.join(' ') : undefined,
         database: s.mode === 'direct' ? (s.databaseUrl ? s.databaseUrl.replace(/\/\/([^:@]+):[^@]*@/, '//$1:***@') : 'not configured') : undefined,
-        ollamaUrl: s.mode === 'direct' ? s.ollamaUrl : undefined,
+        models: s.mode === 'direct' ? { provider: s.models.provider, embed: s.models.embedModel, url: s.models.provider === 'ollama' ? s.models.ollamaUrl : (s.models.llmRouterUrl ?? 'not configured') } : undefined,
       }, null, 2));
     });
 
@@ -397,12 +398,16 @@ export function buildProgram() {
         }
       }
       try {
-        const res = await fetch(new URL('/api/tags', config.models.baseUrl));
-        const names = (await res.json()).models.map((m) => m.name);
-        checks.push(['model:embed', names.includes(config.models.embedModel) ? `ok ${config.models.embedModel}` : `missing ${config.models.embedModel}`]);
-        checks.push(['model:chat', names.includes(config.models.chatModel) ? `ok ${config.models.chatModel}` : `missing ${config.models.chatModel}`]);
+        const embedder = embedderFor(config);
+        if (embedder) {
+          const [v] = await embedder.embed(['doctor synthetic probe']);
+          checks.push(['model:embed', `ok ${embedder.id} dims=${v.length}`]);
+        }
+        const chat = chatFor(config);
+        const reply = await chat.complete({ prompt: 'Ответь одним словом: ok' });
+        checks.push(['model:chat', reply ? `ok ${chat.id}` : `empty ${chat.id}`]);
       } catch (error) {
-        checks.push(['models', `unreachable ${error.message}`]);
+        checks.push(['models', `error ${error.message}`]);
       }
       checks.push(['session', fs.existsSync(config.sessionPath) ? `present ${config.sessionPath}` : 'absent (run login)']);
       for (const [name, result] of checks) console.log(`${name.padEnd(14)} ${result}`);

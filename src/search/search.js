@@ -47,11 +47,11 @@ export class SearchService {
     const { rows } = await this.pool.query(
       `SELECT chat_id, topic_key, bucket_start, part, embedding <=> $2::vector AS distance
        FROM search.chunks
-       WHERE account_id = $1 AND embedding IS NOT NULL
+       WHERE account_id = $1 AND embedding IS NOT NULL AND embedding_model = $7
          AND ($3::timestamptz IS NULL OR last_sent_at >= $3) AND ($4::timestamptz IS NULL OR first_sent_at < $4)
          AND ($6::bigint IS NULL OR chat_id = $6)
        ORDER BY embedding <=> $2::vector LIMIT $5`,
-      [accountId, `[${vector.join(',')}]`, from, to, limit, chatId],
+      [accountId, `[${vector.join(',')}]`, from, to, limit, chatId, this.embedder.id],
     );
     return { rows, used: true, error: null };
   }

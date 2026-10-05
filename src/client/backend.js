@@ -1,5 +1,5 @@
 import { createPool } from '../db.js';
-import { OllamaEmbedder } from '../llm/ollama.js';
+import { createEmbedder } from '../llm/models.js';
 import { archiveStatus, findChats, messageContext, searchMessages } from '../query.js';
 import { SearchService } from '../search/search.js';
 
@@ -13,7 +13,7 @@ export class DirectBackend {
     }
     this.settings = settings;
     this.pool = createPool(settings.databaseUrl, { max: 2, applicationName: 'telegram-insights-cli' });
-    const embedder = settings.disableEmbeddings ? null : new OllamaEmbedder({ baseUrl: settings.ollamaUrl, model: settings.embedModel });
+    const embedder = createEmbedder(settings.models);
     this.search = new SearchService({ pool: this.pool, embedder, windowDays: settings.windowDays });
   }
 

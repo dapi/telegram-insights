@@ -144,12 +144,13 @@ export class Indexer {
 
   // Fills missing embeddings, newest chunks first. The hash guard drops a vector
   // computed for text that was rebuilt meanwhile.
-  async embedPending(accountId, { limit = this.options.embedBatch } = {}) {
+  async embedPending(accountId, { limit = this.embedder?.batchSize ?? this.options.embedBatch } = {}) {
     if (!this.embedder) return 0;
     const { rows } = await this.pool.query(
       `SELECT chat_id, topic_key, bucket_start, part, body, body_hash FROM search.chunks
-       WHERE account_id = $1 AND embedding IS NULL ORDER BY last_sent_at DESC LIMIT $2`,
-      [accountId, limit],
+       WHERE account_id = $1 AND (embedding IS NULL OR embedding_model IS DISTINCT FROM $3)
+       ORDER BY last_sent_at DESC LIMIT $2`,
+      [accountId, limit, this.embedder.id],
     );
     if (!rows.length) return 0;
     const vectors = await this.embedder.embed(rows.map((r) => r.body));
