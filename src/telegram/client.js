@@ -496,7 +496,7 @@ class TelegramClient {
     };
 
     if (this.options.useQr) {
-      startParams.qrCodeHandler = (url, expiresAt) => {
+      startParams.qrCodeHandler = this.options.qrUrlHandler ?? ((url, expiresAt) => {
         const expiresLabel = expiresAt instanceof Date && !Number.isNaN(expiresAt.getTime())
           ? expiresAt.toISOString()
           : 'unknown';
@@ -506,7 +506,7 @@ class TelegramClient {
         });
         console.log(`QR login URL: ${url}`);
         console.log(`QR expires at: ${expiresLabel}`);
-      };
+      });
     } else {
       startParams.phone = this.phoneNumber;
       startParams.code = this.options.codeProvider ?? (async () => await this._askQuestion('Enter the code you received: '));

@@ -113,9 +113,17 @@ export function buildProgram() {
     .option('--qr', 'log in by scanning a QR code')
     .option('--code-file <path>', 'read the login code from this file instead of the terminal')
     .option('--sms', 'ask Telegram to resend the code by SMS')
+    .option('--qr-file <path>', 'with --qr: write the login URL to this owner-only file for approval by another session')
     .action(async (opts) => {
       const config = loadConfig();
       const loginOptions = { useQr: Boolean(opts.qr), forceSms: Boolean(opts.sms) };
+      if (opts.qrFile) {
+        loginOptions.useQr = true;
+        loginOptions.qrUrlHandler = (url) => {
+          fs.writeFileSync(opts.qrFile, url, { mode: 0o600 });
+          console.log(`Login token written to ${opts.qrFile}`);
+        };
+      }
       if (opts.codeFile) {
         loginOptions.codeProvider = async () => {
           console.log(`Waiting for the login code in ${opts.codeFile}`);
