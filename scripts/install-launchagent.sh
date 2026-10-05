@@ -1,24 +1,30 @@
 #!/bin/sh
-# Installs and loads a Telegram Insights LaunchAgent on office3 only.
-# Usage: install-office3-launchagent.sh [label]  (default com.dapi.telegram-insights;
+# Installs and loads a Telegram Insights LaunchAgent on the service host.
+# Usage: install-launchagent.sh [label]  (default com.dapi.telegram-insights;
 # com.dapi.telegram-insights.digest for the daily local digest draft)
-# Prerequisites: npm ci, `telegram-insights-with-pass migrate`, an authorized
-# session (`telegram-insights-with-pass login`). tgcli is not touched.
+# Prerequisites: npm ci, the service env file (see ops/telegram-insights-with-pass),
+# `telegram-insights-with-pass migrate`, an authorized session
+# (`telegram-insights-with-pass login`). tgcli is not touched.
+# The plist template gets the path of this checkout at install time.
 set -eu
-
-if [ "$(hostname)" != "Danils-iMac-Home" ]; then
-  echo "This installer is only for office3" >&2
-  exit 2
-fi
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 label=${1:-com.dapi.telegram-insights}
-source_plist="$repo_root/ops/office3/$label.plist"
+template="$repo_root/ops/launchd/$label.plist.in"
+service_env="${TELEGRAM_INSIGHTS_SERVICE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/telegram-insights/service.env}"
 installed_plist="$HOME/Library/LaunchAgents/$label.plist"
 log_dir="$repo_root/log"
 domain="gui/$(id -u)"
 store="$HOME/Library/Application Support/telegram-insights"
 
+if [ ! -f "$template" ]; then
+  echo "Unknown label $label: no $template" >&2
+  exit 2
+fi
+if [ ! -f "$service_env" ]; then
+  echo "No service env file $service_env; see ops/telegram-insights-with-pass" >&2
+  exit 2
+fi
 if [ ! -f "$store/session.db" ]; then
   echo "No Telegram Insights session in $store; run login first" >&2
   exit 2
@@ -30,7 +36,8 @@ for f in telegram-insights.log telegram-insights.error.log digest.log digest.err
   touch "$log_dir/$f"; chmod 600 "$log_dir/$f"
 done
 launchctl bootout "$domain/$label" 2>/dev/null || true
-cp "$source_plist" "$installed_plist"
+sed "s|@REPO@|$repo_root|g" "$template" > "$installed_plist"
+plutil -lint "$installed_plist" >/dev/null
 chmod 644 "$installed_plist"
 launchctl enable "$domain/$label"
 if ! launchctl bootstrap "$domain" "$installed_plist" 2>/dev/null; then

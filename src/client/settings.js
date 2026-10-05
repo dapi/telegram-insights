@@ -8,8 +8,8 @@ import { configPath, readConfigFile } from '../user-config.js';
 //
 // Config file: $TELEGRAM_INSIGHTS_CONFIG or ~/.config/telegram-insights/config.json
 // {
-//   "remote": "office3",                       // SSH host: use MCP over SSH
-//   "remoteCommand": "~/code/telegram-insights/ops/office3/telegram-insights-with-pass mcp",
+//   "remote": "<ssh-host>",                    // SSH host: use MCP over SSH
+//   "remoteCommand": "<checkout>/ops/telegram-insights-with-pass mcp",
 //   "mcpCommand": null,                        // any command that speaks MCP on stdio
 //   "databaseUrl": null,                       // direct mode; prefer databaseUrlPass
 //   "databaseUrlPass": null,                   // pass entry holding the reader DSN
@@ -18,7 +18,7 @@ import { configPath, readConfigFile } from '../user-config.js';
 // }
 // Secrets do not belong in the config file: use databaseUrlPass or env.
 
-export const DEFAULT_REMOTE_COMMAND = '~/code/telegram-insights/ops/office3/telegram-insights-with-pass mcp';
+export const DEFAULT_REMOTE_COMMAND = 'telegram-insights mcp';
 
 export { configPath, readConfigFile };
 

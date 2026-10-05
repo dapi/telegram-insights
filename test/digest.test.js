@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { clusterChunks, storyPrompt, storyScore } from '../src/digest/digest.js';
+import { clusterChunks, selectStories, storyPrompt, storyScore } from '../src/digest/digest.js';
 
 const at = (hh, mm = 0) => new Date(Date.UTC(2026, 9, 4, hh, mm));
 
@@ -89,5 +89,15 @@ describe('storyScore', () => {
     c.messages[0].own = true;
     const [story] = clusterChunks([c]);
     expect(story.signals).toEqual({ personal: true, own: true, mentioned: false });
+  });
+});
+
+describe('selectStories', () => {
+  it('keeps separate quotas for the owner and for the rest', () => {
+    const story = (own, n) => ({ n, signals: { personal: false, own, mentioned: false } });
+    const ranked = [story(true, 1), story(true, 2), story(true, 3), story(false, 4), story(false, 5)];
+    const { own, around } = selectStories(ranked, { maxOwn: 2, maxAround: 1 });
+    expect(own.map((s) => s.n)).toEqual([1, 2]);
+    expect(around.map((s) => s.n)).toEqual([4]);
   });
 });

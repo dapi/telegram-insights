@@ -2,12 +2,22 @@
 # Runs telegram-insights with credentials loaded from pass at call time.
 # Usage: telegram-insights-with-pass <command> [args...]
 # Secrets stay in the process environment only; nothing is written to disk.
+# Host-specific, non-secret settings (database host, proxy, LLM router) come
+# from a service env file outside the repository:
+#   ${TELEGRAM_INSIGHTS_SERVICE_ENV:-~/.config/telegram-insights/service.env}
+#   TI_PG_HOST=<postgres host>          required
+#   TELEGRAM_PROXY=socks5://host:port   optional
+#   LLM_ROUTER_BASE_URL=http://.../v1   optional, embeddings and answers
 set -eu
 umask 077
 
 export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-repo="$HOME/code/telegram-insights"
-pg_host="${TI_PG_HOST:-192.168.88.10}"
+repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+service_env="${TELEGRAM_INSIGHTS_SERVICE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/telegram-insights/service.env}"
+if [ -f "$service_env" ]; then
+  set -a; . "$service_env"; set +a
+fi
+pg_host="${TI_PG_HOST:?TI_PG_HOST is not set; put it into $service_env}"
 
 secret() {
   pass show "$1" | head -1
@@ -38,9 +48,6 @@ case "$command" in
     TI_READER_DATABASE_URL="$(dsn reader)"; export TI_READER_DATABASE_URL ;;
 esac
 
-# Telegram is reached through the LAN SOCKS proxy on office, like tgcli on office3.
-export TELEGRAM_PROXY="${TELEGRAM_PROXY:-socks5://192.168.88.10:1080}"
 export TELEGRAM_INSIGHTS_STORE="${TELEGRAM_INSIGHTS_STORE:-$HOME/Library/Application Support/telegram-insights}"
-export TI_SERVICE_HOST=office3
 
 exec node "$repo/bin/telegram-insights.js" "$@"

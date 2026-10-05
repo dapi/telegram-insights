@@ -17,7 +17,7 @@ telegram-insights status          # coverage, freshness, index lag
 ```
 
 If `config` reports `direct` with `not configured`, set a remote once:
-`telegram-insights --remote office3 config --init`.
+`telegram-insights --remote <ssh-host> config --init`.
 
 ## Core commands
 
@@ -34,6 +34,8 @@ telegram-insights context tgi:<chat_id>/<message_id> --before 10 --after 10
 - Every message has a `ref` (`tgi:<chat_id>/<message_id>`) and, for channels and
   supergroups, a `url`. Cite them in answers; open `context` before quoting a
   message out of a short fragment.
+- Models (direct mode only): `--llm-router-url` / `LLM_ROUTER_BASE_URL` /
+  `llmRouterUrl` in the config — the OpenAI-compatible LLM router.
 - Connection overrides: `--remote <ssh-host>`, `--remote-command <cmd>`,
   `--mcp-command <cmd>`, `--direct --db-url-pass <pass entry>`
   (env: `TI_REMOTE`, `TI_REMOTE_COMMAND`, `TI_MCP_COMMAND`,

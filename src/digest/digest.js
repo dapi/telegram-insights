@@ -117,6 +117,17 @@ export function clusterChunks(chunks, { threshold = 0.8, sameChatThreshold = 0.7
   }).sort((a, b) => b.score - a.score);
 }
 
+const hasSignal = (story) => story.signals.personal || story.signals.own || story.signals.mentioned;
+
+// Two sections so that conversations with the owner do not crowd out the rest:
+// stories that concern the owner, and what happened around (channels, groups without them).
+export function selectStories(stories, { maxOwn = 6, maxAround = 5 } = {}) {
+  return {
+    own: stories.filter(hasSignal).slice(0, maxOwn),
+    around: stories.filter((s) => !hasSignal(s)).slice(0, maxAround),
+  };
+}
+
 function renderChunk(chunk) {
   const lines = [`Чат «${chunk.title ?? chunk.chatId}»:`];
   for (const m of chunk.messages.slice(0, 15)) {
@@ -211,7 +222,7 @@ async function summarizeStory(llm, story) {
   }
 }
 
-export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ, accountId = null, maxStories = 8, windowDays = 14, now = new Date() }) {
+export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ, accountId = null, maxOwn = 6, maxAround = 5, windowDays = 14, now = new Date() }) {
   const account = await resolveAccountId(pool, accountId);
   if (!account) throw new Error('Archive is empty: no account has been archived yet');
   const { start, end } = dayRange(day, timeZone);
@@ -229,7 +240,8 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
   );
 
   const chunks = await loadChunks(pool, account, start, end);
-  const stories = clusterChunks(chunks).slice(0, maxStories);
+  const sections = selectStories(clusterChunks(chunks), { maxOwn, maxAround });
+  const stories = [...sections.own, ...sections.around];
   for (const story of stories) story.text = await summarizeStory(llm, story);
 
   let overview = null;
@@ -267,10 +279,23 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
   if (!stories.length) md.push('За период в архиве нет сообщений с текстом.');
   else if (overview) md.push(`*Вывод системы:* ${overview}`);
   md.push('');
-  for (const [i, s] of stories.entries()) md.push(`${i + 1}. ${s.text.title}`);
-  md.push('');
-  md.push('## Сюжеты');
-  for (const [i, story] of stories.entries()) {
+  const SECTIONS = [['Твои переписки', sections.own], ['Что происходило вокруг', sections.around]];
+  for (const [name, list] of SECTIONS) {
+    if (!list.length) continue;
+    md.push(`${name}:`);
+    for (const s of list) md.push(`${stories.indexOf(s) + 1}. ${s.text.title}`);
+    md.push('');
+  }
+  for (const [name, list] of SECTIONS) {
+    md.push(`## ${name}`);
+    if (!list.length) {
+      md.push('');
+      md.push('Нет сюжетов за период.');
+    }
+    for (const story of list) renderStory(story, stories.indexOf(story));
+    md.push('');
+  }
+  function renderStory(story, i) {
     md.push('');
     md.push(`### ${i + 1}. ${story.text.title}`);
     md.push('');
@@ -286,7 +311,6 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
       if (chunk.messages.length > 3) md.push(`  - ещё ${chunk.messages.length - 3} сообщ. в этом фрагменте`);
     }
   }
-  md.push('');
   md.push('## Открытые вопросы и расхождения');
   md.push('');
   const questions = stories.flatMap((s, i) => s.text.openQuestions.map((q) => `- (${i + 1}) ${q}`));
@@ -318,6 +342,8 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
       day,
       account,
       stories: stories.length,
+      ownStories: sections.own.length,
+      aroundStories: sections.around.length,
       chunks: chunks.length,
       periodMessages,
       chatsInPeriod: perChat.length,

@@ -7,7 +7,7 @@
 | Служба `telegram-insights run` | LaunchAgent `com.dapi.telegram-insights` на `office3`; реестр — `~/code/personal-ops/launchd/registry.json` |
 | Архив и индекс | БД `telegram_insights` на общем PostgreSQL `office` (192.168.88.10); runbook — `~/code/brandymint/infra/docs/runbooks/telegram-insights.md` |
 | Сессия Telegram | `~/Library/Application Support/telegram-insights/session.db` на office3 — копия авторизации tgcli (решение Данила 2026-10-05), отдельный файл и состояние обновлений |
-| Модели | локальный Ollama на office3: `qwen3-embedding:0.6b` (1024), `qwen3:8b` |
+| Модели | private LLM router (LiteLLM): `telegram-insights-embedding` (OpenRouter `text-embedding-3-small`, 1024) и `telegram-insights-chat` (Claude subscription); согласие Данила 2026-10-05. Запасной локальный вариант — `TI_MODEL_PROVIDER=ollama` |
 | Черновики сводок | `~/Library/Application Support/telegram-insights/digests/`, права 0600 |
 | Логи службы | `~/code/telegram-insights/log/` (в Git не попадают; только счётчики и коды ошибок) |
 
@@ -67,7 +67,13 @@ com.dapi.telegram-insights.digest` и перевести реестр в `absent
   БД и переживает перезапуск. Эти значения — стартовые, а не «безопасные».
 - Один архиватор на аккаунт: advisory lock PostgreSQL. Второй экземпляр не
   стартует; при потере соединения служба завершается, launchd её перезапускает.
-- Модель вне loopback запрещена без `TI_APPROVED_MODEL_HOSTS` (явное согласие).
+- Адрес router не зашит в код: `LLM_ROUTER_BASE_URL`, `llmRouterUrl` в
+  `~/.config/telegram-insights/config.json` или `--llm-router-url`;
+  `LLM_ROUTER_API_KEY` необязателен. Aliases меняются `TI_EMBED_MODEL` и
+  `TI_LLM_MODEL`. При смене embedding-модели индексатор сам пересчитывает
+  векторы, а поиск по смыслу сравнивает только векторы текущей модели.
+- Для `TI_MODEL_PROVIDER=ollama` адрес вне loopback запрещён без
+  `TI_APPROVED_MODEL_HOSTS`.
 
 ## Откат
 

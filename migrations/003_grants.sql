@@ -1,5 +1,5 @@
 -- Least-privilege grants for runtime roles. Roles are provisioned by
--- ~/code/brandymint/infra; tests and local setups may omit them.
+-- the infrastructure repository; tests and local setups may omit them.
 
 DO $$
 BEGIN

@@ -6,11 +6,11 @@
   <string>com.dapi.telegram-insights</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/danil/code/telegram-insights/ops/office3/telegram-insights-with-pass</string>
+    <string>@REPO@/ops/telegram-insights-with-pass</string>
     <string>run</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>/Users/danil/code/telegram-insights</string>
+  <string>@REPO@</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -20,8 +20,8 @@
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>
-  <string>/Users/danil/code/telegram-insights/log/telegram-insights.log</string>
+  <string>@REPO@/log/telegram-insights.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/danil/code/telegram-insights/log/telegram-insights.error.log</string>
+  <string>@REPO@/log/telegram-insights.error.log</string>
 </dict>
 </plist>

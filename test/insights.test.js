@@ -166,6 +166,11 @@ describe('daily digest draft', () => {
     expect(meta.partial).toBe(true);
     const personal = markdown.split('### ').find((s) => s.includes('Иван (синтетический)'));
     expect(personal).toMatch(/важно: личный чат, есть твои сообщения/);
+    const [, own, around] = markdown.split(/^## (?:Твои переписки|Что происходило вокруг)$/m);
+    expect(own).toMatch(/Иван \(синтетический\)/);
+    expect(around).toMatch(/Новости конференции/);
+    expect(around).not.toMatch(/Иван \(синтетический\)/);
+    expect(meta.ownStories).toBe(1);
   });
 
   it('still produces an extractive draft without a model', async () => {
