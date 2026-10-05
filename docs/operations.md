@@ -6,14 +6,24 @@
 | --- | --- |
 | Служба `telegram-insights run` | LaunchAgent `com.dapi.telegram-insights` на `office3`; реестр — `~/code/personal-ops/launchd/registry.json` |
 | Архив и индекс | БД `telegram_insights` на общем PostgreSQL `office` (192.168.88.10); runbook — `~/code/brandymint/infra/docs/runbooks/telegram-insights.md` |
-| Сессия Telegram | `~/Library/Application Support/telegram-insights/session.db` на office3, отдельно от tgcli |
+| Сессия Telegram | `~/Library/Application Support/telegram-insights/session.db` на office3 — копия авторизации tgcli (решение Данила 2026-10-05), отдельный файл и состояние обновлений |
 | Модели | локальный Ollama на office3: `qwen3-embedding:0.6b` (1024), `qwen3:8b` |
 | Черновики сводок | `~/Library/Application Support/telegram-insights/digests/`, права 0600 |
 | Логи службы | `~/code/telegram-insights/log/` (в Git не попадают; только счётчики и коды ошибок) |
 
-Секреты читает `ops/office3/telegram-insights-with-pass` из `pass` в момент
-запуска: `telegram-app/id`, `telegram-app/api_hash`,
-`telegram-insights/postgres/{owner,archiver,indexer,reader}-password`.
+Секреты читает `ops/office3/telegram-insights-with-pass` в момент запуска:
+пароли БД — из `pass` (`telegram-insights/postgres/{owner,archiver,indexer,reader}-password`),
+API app — из конфигурации tgcli, потому что сессия является копией его
+авторизации.
+
+Авторизация: `scripts/office3-copy-tgcli-session.sh` делает согласованную
+копию `session.json` tgcli (`sqlite3 .backup`). Отдельного входа и кода не
+требуется. Оба клиента используют один ключ авторизации с одного IP; если в
+логах любой из служб появится `AUTH_KEY_DUPLICATED` или `AUTH_KEY_UNREGISTERED`,
+остановить Telegram Insights и сообщить Данилу. Альтернатива — отдельная сессия:
+`login --qr-file` и подтверждение `scripts/approve-login-with-session.js` из
+копии сессии tgcli; аккаунт с облачным паролем тогда потребует
+`--password-pass <entry>`.
 Telegram доступен через SOCKS `office` (как у tgcli).
 
 ## Команды на office3
@@ -21,7 +31,7 @@ Telegram доступен через SOCKS `office` (как у tgcli).
 ```sh
 cd ~/code/telegram-insights
 ops/office3/telegram-insights-with-pass migrate
-TELEGRAM_PHONE_NUMBER=... ops/office3/telegram-insights-with-pass login   # интерактивно, один раз
+scripts/office3-copy-tgcli-session.sh                     # один раз, авторизация tgcli
 scripts/install-office3-launchagent.sh
 ops/office3/telegram-insights-with-pass status            # сводка покрытия
 ops/office3/telegram-insights-with-pass status --chats    # по каждому чату
