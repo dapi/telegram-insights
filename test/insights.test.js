@@ -173,6 +173,21 @@ describe('daily digest draft', () => {
     expect(meta.ownStories).toBe(1);
   });
 
+  it('builds a rolling window and structured stories for other consumers', async () => {
+    const end = new Date(`${DAY}T14:00:00Z`);
+    const { data, markdown } = await buildDigest({ pool, llm: new FakeChat(), range: { start: new Date(end.getTime() - 24 * 3_600_000), end }, now: end });
+    expect(markdown).not.toMatch(/за null/);
+    expect(data.period.day).toBeNull();
+    const [own, around] = data.sections;
+    expect(own.id).toBe('own');
+    expect(own.stories.map((s) => s.chats).flat()).toContain('Иван (синтетический)');
+    expect(around.stories.some((s) => s.chats.includes('Новости конференции'))).toBe(true);
+    const story = own.stories[0];
+    expect(story.summary).toBe('Синтетический пересказ сюжета.');
+    expect(story.sources[0]).toMatchObject({ chat: 'Иван (синтетический)', ref: expect.stringMatching(/^tgi:601\//) });
+    expect(data.coverage.periodMessages).toBe(8);
+  });
+
   it('still produces an extractive draft without a model', async () => {
     const { markdown, meta } = await buildDigest({ pool, llm: null, day: DAY, now: new Date(clock.now()) });
     expect(meta.model).toBeNull();

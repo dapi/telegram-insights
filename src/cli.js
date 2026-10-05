@@ -345,12 +345,27 @@ export function buildProgram() {
     .option('--force', 'overwrite an existing draft')
     .option('--skip-existing', 'exit successfully if the draft already exists (for schedules)')
     .option('--no-llm', 'extractive draft without the local model')
+    .option('--hours <n>', 'rolling window of the last N hours ending now, instead of a calendar day')
+    .option('--json', 'print structured stories as JSON instead of Markdown')
     .action(async (opts) => {
       const config = loadConfig();
-      const day = opts.date ?? localDate(new Date(Date.now() - 86_400_000), config.timeZone);
+      const now = new Date();
+      let range = null;
+      if (opts.hours !== undefined) {
+        const hours = Number(opts.hours);
+        if (!(hours > 0 && hours <= 24 * 14)) throw new Error('--hours must be between 0 and 336');
+        if (opts.date) throw new Error('--hours and --date are mutually exclusive');
+        if (!opts.stdout && !opts.json && !opts.out) throw new Error('--hours needs --stdout, --json or --out');
+        range = { start: new Date(now.getTime() - hours * 3_600_000), end: now };
+      }
+      const day = range ? null : (opts.date ?? localDate(new Date(Date.now() - 86_400_000), config.timeZone));
       const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 2 });
       try {
-        const { markdown, meta } = await buildDigest({ pool, llm: chatFor(config, opts.llm), day, timeZone: config.timeZone, windowDays: config.archive.windowDays });
+        const { markdown, data, meta } = await buildDigest({ pool, llm: chatFor(config, opts.llm), day, range, now, timeZone: config.timeZone, windowDays: config.archive.windowDays });
+        if (opts.json) {
+          console.log(JSON.stringify(data));
+          return;
+        }
         if (opts.stdout) {
           console.log(markdown);
           return;

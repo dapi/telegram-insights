@@ -222,10 +222,10 @@ async function summarizeStory(llm, story) {
   }
 }
 
-export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ, accountId = null, maxOwn = 6, maxAround = 5, windowDays = 14, now = new Date() }) {
+export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ, accountId = null, maxOwn = 6, maxAround = 5, windowDays = 14, now = new Date(), range = null }) {
   const account = await resolveAccountId(pool, accountId);
   if (!account) throw new Error('Archive is empty: no account has been archived yet');
-  const { start, end } = dayRange(day, timeZone);
+  const { start, end } = range ?? dayRange(day, timeZone);
   const { summary, chats } = await coverageReport(pool, { accountId: account, windowDays, now });
 
   const { rows: perChat } = await pool.query(
@@ -257,8 +257,11 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
   }
 
   // Sources that cannot be trusted to be complete for this day.
+  // A period that reaches into the last hour is covered by live updates there;
+  // history reconciliation is only expected up to an hour ago.
+  const verifyBy = new Date(Math.min(end.getTime(), now.getTime() - 3_600_000));
   const incomplete = chats.filter((c) => !['left', 'excluded'].includes(c.state)
-    && (c.state !== 'loaded' || c.gapPending || !c.verifiedTo || new Date(c.verifiedTo) < end));
+    && (c.state !== 'loaded' || c.gapPending || !c.verifiedTo || new Date(c.verifiedTo) < verifyBy));
   const partialReasons = [];
   if (!summary.complete) partialReasons.push('историческая загрузка не завершена для всех доступных чатов');
   if (incomplete.length) partialReasons.push(`${incomplete.length} чатов не сверены до конца периода`);
@@ -267,7 +270,7 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
   if (!llm) partialReasons.push('локальная модель не использовалась: сюжеты не пересказаны');
 
   const md = [];
-  md.push(`# Сводка Telegram за ${day} — черновик`);
+  md.push(`# Сводка Telegram за ${day ?? `${formatLocal(start, timeZone)} — ${formatLocal(end, timeZone)}`} — черновик`);
   md.push('');
   md.push(`- Период: ${formatLocal(start, timeZone)} — ${formatLocal(end, timeZone)} (${timeZone}).`);
   md.push(`- Сформировано: ${formatLocal(now, timeZone)}; индекс: позиция архива ${summary.indexer?.lastSeq ?? 0}, отставание ${summary.indexer?.lag ?? 'неизвестно'}.`);
@@ -336,8 +339,48 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
   md.push('- Черновик не обновляется автоматически после создания.');
   md.push('- Секретные чаты не входят в архив.');
   md.push('');
+  const sourceOf = (chunk, m) => ({
+    chat: chunk.title ?? String(chunk.chatId),
+    at: m.sentAt instanceof Date ? m.sentAt.toISOString() : m.sentAt,
+    sender: m.sender ?? null,
+    excerpt: excerpt(m.text),
+    url: m.link?.url ?? null,
+    ref: m.link?.ref ?? null,
+  });
+  const storyData = (story) => ({
+    n: stories.indexOf(story) + 1,
+    title: story.text.title,
+    summary: story.text.summary,
+    openQuestions: story.text.openQuestions,
+    signals: story.signals,
+    chats: [...new Set(story.members.map((c) => c.title ?? String(c.chatId)))],
+    messages: story.messages.length,
+    sources: story.members.flatMap((c) => c.messages.filter((m) => m.text).slice(0, 2).map((m) => sourceOf(c, m))).slice(0, 6),
+  });
+  const data = {
+    period: { start: start.toISOString(), end: end.toISOString(), timeZone, day: day ?? null },
+    generatedAt: now.toISOString(),
+    model: llm?.id ?? null,
+    partial: partialReasons.length > 0,
+    partialReasons,
+    overview,
+    sections: [
+      { id: 'own', title: 'Твои переписки', stories: sections.own.map(storyData) },
+      { id: 'around', title: 'Что происходило вокруг', stories: sections.around.map(storyData) },
+    ],
+    coverage: {
+      chatsInPeriod: perChat.length,
+      periodMessages,
+      chunks: chunks.length,
+      archiveChatsCovered: summary.chats.covered,
+      archiveChatsAvailable: summary.chats.available,
+      incompleteChats: incomplete.length,
+    },
+    limitations: [EDITS_LIMITATION, 'Секретные чаты не входят в архив.'],
+  };
   return {
     markdown: md.join('\n'),
+    data,
     meta: {
       day,
       account,
