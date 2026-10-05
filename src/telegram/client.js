@@ -489,10 +489,10 @@ class TelegramClient {
 
   _buildStartParams() {
     const startParams = {
-      password: async () => {
+      password: this.options.passwordProvider ?? (async () => {
         const value = await this._askHiddenQuestion('Enter your 2FA password (leave empty if not enabled): ');
         return value.length ? value : undefined;
-      },
+      }),
     };
 
     if (this.options.useQr) {
@@ -509,7 +509,7 @@ class TelegramClient {
       };
     } else {
       startParams.phone = this.phoneNumber;
-      startParams.code = async () => await this._askQuestion('Enter the code you received: ');
+      startParams.code = this.options.codeProvider ?? (async () => await this._askQuestion('Enter the code you received: '));
       startParams.codeSentCallback = async (sentCode) => {
         if (this.options.forceSms && (sentCode.type === 'app' || sentCode.type === 'email')) {
           try {

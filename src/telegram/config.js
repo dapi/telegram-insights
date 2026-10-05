@@ -1,185 +1,77 @@
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 
-import { resolveStoreDir } from './store.js';
+import { resolveStoreDir, resolveStorePaths } from '../store.js';
 
-const CONFIG_FILE = 'config.json';
-const GLOBAL_CONFIG_FILE = '.tgclirc';
+// Telegram Insights reads configuration from the environment only. Secrets
+// (API hash, database passwords) are injected from `pass` by the launcher and
+// are never written to the store or the repository.
 
 function normalizeValue(value) {
-  if (value === undefined || value === null) {
-    return '';
-  }
-  if (typeof value === 'string') {
-    return value.trim();
-  }
+  if (value === undefined || value === null) return '';
   return String(value).trim();
 }
 
-function normalizeBoolean(value, fallback = false) {
-  if (value === undefined || value === null || value === '') {
-    return fallback;
-  }
-  if (typeof value === 'boolean') {
-    return value;
-  }
-  if (typeof value === 'number') {
-    return value !== 0;
-  }
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
-      return true;
-    }
-    if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {
-      return false;
-    }
-  }
-  return fallback;
+function intValue(env, name, fallback) {
+  const raw = normalizeValue(env[name]);
+  if (!raw) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) throw new Error(`${name} must be a number`);
+  return n;
 }
 
-export function normalizeConfig(raw = {}, options = {}) {
-  const apiId = normalizeValue(raw.apiId ?? raw.api_id ?? raw.apiID);
-  const apiHash = normalizeValue(raw.apiHash ?? raw.api_hash);
-  const phoneNumber = normalizeValue(raw.phoneNumber ?? raw.phone ?? raw.phone_number);
-  const envProxy = options.includeEnv === false ? '' : normalizeValue(process.env.TELEGRAM_PROXY);
-  const proxy = envProxy
-    || normalizeValue(raw.proxy ?? raw.proxyUrl ?? raw.proxy_url);
-  const mcpRaw = raw.mcp && typeof raw.mcp === 'object' ? raw.mcp : {};
-  const mcpEnabled = normalizeBoolean(raw.mcpEnabled ?? raw.mcp_enabled ?? mcpRaw.enabled, false);
-  const mcp = {
-    enabled: mcpEnabled,
-  };
-  const mcpHost = normalizeValue(mcpRaw.host ?? raw.mcpHost ?? raw.mcp_host);
-  if (mcpHost) {
-    mcp.host = mcpHost;
-  }
-  const mcpPortRaw = mcpRaw.port ?? raw.mcpPort ?? raw.mcp_port;
-  const mcpPort = Number(mcpPortRaw);
-  if (Number.isFinite(mcpPort) && mcpPort > 0) {
-    mcp.port = mcpPort;
-  }
+function list(value) {
+  return normalizeValue(value).split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+export function loadConfig(env = process.env) {
+  const storeDir = resolveStoreDir(normalizeValue(env.TELEGRAM_INSIGHTS_STORE) || undefined);
+  const { sessionPath } = resolveStorePaths(storeDir, { sessionFile: 'session.db' });
+  const defaultUrl = normalizeValue(env.TI_DATABASE_URL);
   return {
-    apiId,
-    apiHash,
-    phoneNumber,
-    proxy,
-    mcp,
+    storeDir,
+    sessionPath,
+    digestDir: normalizeValue(env.TI_DIGEST_DIR) || path.join(storeDir, 'digests'),
+    telegram: {
+      apiId: normalizeValue(env.TELEGRAM_API_ID),
+      apiHash: normalizeValue(env.TELEGRAM_API_HASH),
+      phoneNumber: normalizeValue(env.TELEGRAM_PHONE_NUMBER),
+      proxy: normalizeValue(env.TELEGRAM_PROXY),
+    },
+    db: {
+      owner: normalizeValue(env.TI_OWNER_DATABASE_URL) || defaultUrl,
+      archiver: normalizeValue(env.TI_ARCHIVER_DATABASE_URL) || defaultUrl,
+      indexer: normalizeValue(env.TI_INDEXER_DATABASE_URL) || defaultUrl,
+      reader: normalizeValue(env.TI_READER_DATABASE_URL) || defaultUrl,
+    },
+    archive: {
+      windowDays: intValue(env, 'TI_WINDOW_DAYS', 14),
+      pageSize: intValue(env, 'TI_PAGE_SIZE', 100),
+      dialogsIntervalMs: intValue(env, 'TI_DIALOGS_INTERVAL_MINUTES', 30) * 60_000,
+      excludedChats: list(env.TI_EXCLUDED_CHATS),
+    },
+    limiter: {
+      minIntervalMs: intValue(env, 'TI_MIN_INTERVAL_MS', 1500),
+      initialIntervalMs: intValue(env, 'TI_INITIAL_INTERVAL_MS', 3000),
+      maxIntervalMs: intValue(env, 'TI_MAX_INTERVAL_MS', 60_000),
+      maxRequestsPerHour: intValue(env, 'TI_MAX_REQUESTS_PER_HOUR', 1200),
+    },
+    models: {
+      baseUrl: normalizeValue(env.TI_OLLAMA_URL) || 'http://127.0.0.1:11434',
+      embedModel: normalizeValue(env.TI_EMBED_MODEL) || 'qwen3-embedding:0.6b',
+      chatModel: normalizeValue(env.TI_LLM_MODEL) || 'qwen3:8b',
+      approvedHosts: list(env.TI_APPROVED_MODEL_HOSTS),
+      embeddingsEnabled: normalizeValue(env.TI_DISABLE_EMBEDDINGS) !== '1',
+    },
+    timeZone: normalizeValue(env.TI_TIMEZONE) || 'Europe/Moscow',
+    home: os.homedir(),
   };
 }
 
-export function validateConfig(config) {
+export function validateTelegramConfig(config, { forLogin = false } = {}) {
   const missing = [];
-  if (!config?.apiId) missing.push('apiId');
-  if (!config?.apiHash) missing.push('apiHash');
-  if (!config?.phoneNumber) missing.push('phoneNumber');
+  if (!config.telegram.apiId) missing.push('TELEGRAM_API_ID');
+  if (!config.telegram.apiHash) missing.push('TELEGRAM_API_HASH');
+  if (forLogin && !config.telegram.phoneNumber && !forLogin.qr) missing.push('TELEGRAM_PHONE_NUMBER');
   return missing;
-}
-
-export function resolveGlobalConfigPath(homeDir = os.homedir()) {
-  return path.join(homeDir, GLOBAL_CONFIG_FILE);
-}
-
-function unquoteRcValue(value) {
-  if (value.length >= 2) {
-    const first = value[0];
-    const last = value[value.length - 1];
-    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return value.slice(1, -1);
-    }
-  }
-  return value;
-}
-
-export function loadRcConfig(rcPath = resolveGlobalConfigPath()) {
-  let raw;
-  try {
-    raw = fs.readFileSync(rcPath, 'utf8');
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      return {};
-    }
-    throw error;
-  }
-
-  const config = {};
-  for (const [index, line] of raw.split(/\r?\n/).entries()) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) {
-      continue;
-    }
-    const separator = trimmed.indexOf('=');
-    if (separator <= 0) {
-      throw new Error(`${rcPath}: invalid entry on line ${index + 1}`);
-    }
-    const rawKey = trimmed.slice(0, separator).trim();
-    if (rawKey !== 'proxy') {
-      throw new Error(`${rcPath}: unsupported key ${rawKey} on line ${index + 1}`);
-    }
-    const value = unquoteRcValue(trimmed.slice(separator + 1).trim());
-    config.proxy = value;
-  }
-  return config;
-}
-
-export function resolveConfigPath(storeDir = resolveStoreDir()) {
-  return path.join(storeDir, CONFIG_FILE);
-}
-
-function resolveEffectiveConfig(rawConfig, rcConfig) {
-  const normalized = normalizeConfig(rawConfig ?? {}, { includeEnv: false });
-  const profileProxy = normalizeValue(
-    rawConfig?.proxy ?? rawConfig?.proxyUrl ?? rawConfig?.proxy_url,
-  );
-  normalized.proxy = normalizeValue(process.env.TELEGRAM_PROXY)
-    || profileProxy
-    || normalizeValue(rcConfig.proxy);
-  return normalized;
-}
-
-export function loadConfig(storeDir = resolveStoreDir(), options = {}) {
-  const configPath = resolveConfigPath(storeDir);
-  const rcPath = options.rcPath ?? resolveGlobalConfigPath();
-  const rcConfig = loadRcConfig(rcPath);
-  try {
-    const raw = fs.readFileSync(configPath, 'utf8');
-    const parsed = JSON.parse(raw) ?? {};
-    return {
-      config: resolveEffectiveConfig(parsed, rcConfig),
-      rawConfig: parsed,
-      path: configPath,
-      rcPath,
-    };
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      const hasFallbackProxy = Boolean(
-        normalizeValue(process.env.TELEGRAM_PROXY) || normalizeValue(rcConfig.proxy),
-      );
-      return {
-        config: hasFallbackProxy ? resolveEffectiveConfig({}, rcConfig) : null,
-        rawConfig: null,
-        path: configPath,
-        rcPath,
-      };
-    }
-    throw error;
-  }
-}
-
-export function saveConfig(storeDir = resolveStoreDir(), config) {
-  const configPath = resolveConfigPath(storeDir);
-  const payload = normalizeConfig(config ?? {}, { includeEnv: false });
-  fs.mkdirSync(storeDir, { recursive: true });
-  const tempPath = `${configPath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    fs.writeFileSync(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    fs.renameSync(tempPath, configPath);
-  } finally {
-    try { fs.unlinkSync(tempPath); } catch (error) {
-      if (error?.code !== 'ENOENT') throw error;
-    }
-  }
-  return { config: payload, path: configPath };
 }

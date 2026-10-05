@@ -107,11 +107,12 @@ export function classifyTelegramError(error) {
 }
 
 export class MtcuteGateway {
-  constructor({ apiId, apiHash, phoneNumber, sessionPath, proxy, log = console }) {
+  constructor({ apiId, apiHash, phoneNumber, sessionPath, proxy, log = console, loginOptions = {} }) {
     this.log = log;
     this.client = new TelegramClient(apiId, apiHash, phoneNumber, sessionPath, {
       proxy: proxy || undefined,
       updates: { catchUp: true },
+      ...loginOptions,
     });
     this.mt = this.client.client;
     this.self = null;
