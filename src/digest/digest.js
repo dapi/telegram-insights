@@ -4,18 +4,12 @@ import { STATE_LABELS, coverageReport, resolveAccountId } from '../archive/statu
 import { markdownLink, messageLink } from '../links.js';
 import { EDITS_LIMITATION } from '../search/search.js';
 import { DEFAULT_TZ, dayRange, formatLocal, formatTime } from '../time.js';
+import { alarmingNotifications, classifyAwaiting, extractPromises, loadAwaitingCandidates, loadOwnMessages } from './actions.js';
 
-const STORY_SYSTEM = `Ты готовишь черновик ежедневной сводки по перепискам пользователя в Telegram.
-Тебе дан один сюжет: сообщения из одного или нескольких чатов. Верни JSON:
-{"title": "короткий заголовок сюжета", "summary": "2–4 предложения: что произошло", "open_questions": []}
-Правила: опирайся только на сообщения; не додумывай; пиши по-русски.
-open_questions — обычно пустой список. Добавляй пункт (не больше двух) только если:
-- сообщения прямо противоречат друг другу (разные даты, суммы, решения), или
-- к владельцу аккаунта обратились с просьбой или вопросом, и в сообщениях нет его ответа.
-Не добавляй вопросы вида «неизвестно, ответил ли», «что имелось в виду», «почему так написали» и любые вопросы из любопытства.`;
-
-const OVERVIEW_SYSTEM = `По заголовкам и кратким описаниям сюжетов дня напиши общую картину дня: 2–4 предложения по-русски,
-только из приведённого текста, без новых фактов.`;
+const STORY_SYSTEM = `Ты готовишь сводку непрочитанного в Telegram: владелец аккаунта не читал эти сообщения.
+Тебе дан один сюжет: сообщения из одной или нескольких групп и каналов. Верни JSON:
+{"title": "короткий заголовок сюжета", "summary": "1–3 предложения: что нового и важного, без пересказа очевидного"}
+Опирайся только на сообщения, не додумывай, пиши по-русски.`;
 
 function parseVector(value) {
   if (!value) return null;
@@ -185,17 +179,6 @@ export function clusterChunks(chunks, { threshold = 0.8, sameChatThreshold = 0.7
   }).sort((a, b) => b.score - a.score);
 }
 
-const hasSignal = (story) => story.signals.personal || story.signals.own || story.signals.mentioned;
-
-// Two sections so that conversations with the owner do not crowd out the rest:
-// stories that concern the owner, and what happened around (channels, groups without them).
-export function selectStories(stories, { maxOwn = 6, maxAround = 5 } = {}) {
-  return {
-    own: stories.filter(hasSignal).slice(0, maxOwn),
-    around: stories.filter((s) => !hasSignal(s)).slice(0, maxAround),
-  };
-}
-
 function renderChunk(chunk) {
   const lines = [`Чат «${chunk.title ?? chunk.chatId}»:`];
   for (const m of chunk.messages.slice(0, 15)) {
@@ -231,7 +214,7 @@ async function loadChunks(pool, accountId, start, end) {
   const mention = account?.username ? `@${account.username.toLowerCase()}` : null;
   const { rows } = await pool.query(
     `SELECT c.chat_id, c.topic_key, c.bucket_start, c.part, c.message_ids, c.first_sent_at, c.last_sent_at, c.embedding,
-            ch.title, ch.peer_kind, ch.username
+            ch.title, ch.peer_kind, ch.username, ch.read_inbox_max_id
      FROM search.chunks c JOIN archive.chats ch ON ch.account_id = c.account_id AND ch.chat_id = c.chat_id
      WHERE c.account_id = $1 AND c.first_sent_at >= $2 AND c.first_sent_at < $3 AND NOT ch.excluded
      ORDER BY c.first_sent_at`,
@@ -252,6 +235,7 @@ async function loadChunks(pool, accountId, start, end) {
       topicKey: Number(row.topic_key),
       title: row.title,
       peerKind: row.peer_kind,
+      readInboxMaxId: row.read_inbox_max_id === null ? null : Number(row.read_inbox_max_id),
       vector: parseVector(row.embedding),
       messages: messages.map((m) => ({
         messageId: Number(m.message_id),
@@ -274,7 +258,6 @@ async function summarizeStory(llm, story) {
   const fallback = {
     title: excerpt(story.messages[0]?.text, 80) || 'Сюжет без текста',
     summary: null,
-    openQuestions: [],
     generated: false,
   };
   if (!llm) return fallback;
@@ -284,7 +267,6 @@ async function summarizeStory(llm, story) {
     return {
       title: String(parsed.title ?? fallback.title).slice(0, 160),
       summary: parsed.summary ? String(parsed.summary) : null,
-      openQuestions: Array.isArray(parsed.open_questions) ? parsed.open_questions.map(String).filter(Boolean).slice(0, 2) : [],
       generated: true,
     };
   } catch (error) {
@@ -292,133 +274,115 @@ async function summarizeStory(llm, story) {
   }
 }
 
-export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ, accountId = null, maxOwn = 6, maxAround = 5, windowDays = 14, now = new Date(), range = null }) {
+// Unread = incoming messages above the chat's read marker. Without a marker
+// yet (before the first dialogs pass) a chat counts as unread only where the
+// owner did not write in the period.
+export function unreadChunks(chunks) {
+  const ownChats = new Set(chunks.filter((c) => c.messages.some((m) => m.own)).map((c) => c.chatId));
+  return chunks
+    .filter((c) => c.peerKind !== 'user' && c.peerKind !== 'saved')
+    .map((c) => ({
+      ...c,
+      messages: c.messages.filter((m) => !m.own && (c.readInboxMaxId === null || c.readInboxMaxId === undefined
+        ? !ownChats.has(c.chatId)
+        : m.messageId > c.readInboxMaxId)),
+    }))
+    .filter((c) => c.messages.some((m) => m.text));
+}
+
+export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ, accountId = null, maxUnread = 6, awaitingLookbackHours = 72, windowDays = 14, now = new Date(), range = null }) {
   const account = await resolveAccountId(pool, accountId);
   if (!account) throw new Error('Archive is empty: no account has been archived yet');
   const { start, end } = range ?? dayRange(day, timeZone);
   const { summary, chats } = await coverageReport(pool, { accountId: account, windowDays, now });
 
   const { rows: perChat } = await pool.query(
-    `SELECT chat_id, count(*)::int AS messages, count(*) FILTER (WHERE text <> '')::int AS with_text
-     FROM archive.messages WHERE account_id = $1 AND sent_at >= $2 AND sent_at < $3 GROUP BY chat_id`,
+    `SELECT chat_id, count(*)::int AS messages FROM archive.messages
+     WHERE account_id = $1 AND sent_at >= $2 AND sent_at < $3 GROUP BY chat_id`,
     [account, start, end],
   );
   const periodMessages = perChat.reduce((acc, r) => acc + r.messages, 0);
-  const { rows: [pending] } = await pool.query(
-    `SELECT count(*)::int AS n FROM search.chunks WHERE account_id = $1 AND embedding IS NULL AND first_sent_at >= $2 AND first_sent_at < $3`,
-    [account, start, end],
+  const { rows: [readState] } = await pool.query(
+    `SELECT count(*) FILTER (WHERE read_state_at IS NOT NULL)::int AS known, count(*)::int AS total
+     FROM archive.chats WHERE account_id = $1 AND in_dialogs AND NOT excluded`,
+    [account],
   );
 
+  // 1. Waiting for the owner's reply (a longer lookback: an old request still counts).
+  const since = new Date(end.getTime() - awaitingLookbackHours * 3_600_000);
+  const awaiting = await classifyAwaiting(llm, await loadAwaitingCandidates(pool, account, { since, end }), { now: Math.min(end.getTime(), now.getTime()) });
+  // 2. The owner's own promises in the period.
+  const promises = await extractPromises(llm, await loadOwnMessages(pool, account, { start, end }));
+  // 3. Unread groups and channels, 4. alarming bot notifications.
   const chunks = await loadChunks(pool, account, start, end);
-  const automated = summarizeAutomated(chunks.filter(isAutomated));
-  const sections = selectStories(clusterChunks(chunks.filter((c) => !isAutomated(c))), { maxOwn, maxAround });
-  const stories = [...sections.own, ...sections.around];
+  const alerts = alarmingNotifications(summarizeAutomated(chunks.filter(isAutomated)));
+  const unread = unreadChunks(chunks.filter((c) => !isAutomated(c)));
+  const stories = clusterChunks(unread).slice(0, maxUnread);
   for (const story of stories) story.text = await summarizeStory(llm, story);
+  const unreadChats = new Set(unread.map((c) => c.chatId)).size;
+  const unreadMessages = unread.reduce((n, c) => n + c.messages.length, 0);
 
-  let overview = null;
-  if (llm && stories.some((s) => s.text.generated)) {
-    try {
-      overview = await llm.complete({
-        system: OVERVIEW_SYSTEM,
-        prompt: stories.map((s, i) => `${i + 1}. ${s.text.title}: ${s.text.summary ?? ''}`).join('\n'),
-      });
-    } catch {
-      overview = null;
-    }
-  }
-
-  // Sources that cannot be trusted to be complete for this day.
   // A period that reaches into the last hour is covered by live updates there;
   // history reconciliation is only expected up to an hour ago.
   const verifyBy = new Date(Math.min(end.getTime(), now.getTime() - 3_600_000));
-  const incomplete = chats.filter((c) => !['left', 'excluded'].includes(c.state)
+  const incomplete = chats.filter((c) => !['left', 'excluded', 'unavailable'].includes(c.state)
     && (c.state !== 'loaded' || c.gapPending || !c.verifiedTo || new Date(c.verifiedTo) < verifyBy));
   const partialReasons = [];
   if (!summary.complete) partialReasons.push('историческая загрузка не завершена для всех доступных чатов');
   if (incomplete.length) partialReasons.push(`${incomplete.length} чатов не сверены до конца периода`);
   if (summary.indexer?.lag) partialReasons.push(`индекс отстаёт от архива на ${summary.indexer.lag} записей`);
-  if (pending.n) partialReasons.push(`${pending.n} фрагментов периода ещё без embeddings (сюжеты могли не объединиться)`);
-  if (!llm) partialReasons.push('локальная модель не использовалась: сюжеты не пересказаны');
+  if (readState.known < readState.total) partialReasons.push(`отметки прочтения есть для ${readState.known} из ${readState.total} чатов`);
+  if (!llm) partialReasons.push('модель не использовалась: обещания не извлечены, ответы отобраны по вопросительным знакам');
 
+  const link = (item) => markdownLink(formatLocal(item.lastAt ?? item.at, timeZone), { url: item.url, ref: item.ref });
   const md = [];
-  md.push(`# Сводка Telegram за ${day ?? `${formatLocal(start, timeZone)} — ${formatLocal(end, timeZone)}`} — черновик`);
+  md.push(`# Telegram: что требует внимания — ${day ?? `${formatLocal(start, timeZone)} — ${formatLocal(end, timeZone)}`}`);
   md.push('');
-  md.push(`- Период: ${formatLocal(start, timeZone)} — ${formatLocal(end, timeZone)} (${timeZone}).`);
-  md.push(`- Сформировано: ${formatLocal(now, timeZone)}; индекс: позиция архива ${summary.indexer?.lastSeq ?? 0}, отставание ${summary.indexer?.lag ?? 'неизвестно'}.`);
-  md.push(`- Статус выпуска: ${partialReasons.length ? `**частичный** — ${partialReasons.join('; ')}` : 'полный по данным архива'}.`);
-  md.push(`- Модель: ${llm ? llm.id : 'не использовалась'}. Текст «Вывод системы» создан моделью; цитаты ниже — исходные сообщения авторов.`);
+  md.push(`- Период: ${formatLocal(start, timeZone)} — ${formatLocal(end, timeZone)} (${timeZone}); ответы ищутся за ${awaitingLookbackHours} ч.`);
+  md.push(`- Сформировано: ${formatLocal(now, timeZone)}. Модель: ${llm ? llm.id : 'не использовалась'}.`);
+  md.push(`- Статус: ${partialReasons.length ? `**частичный** — ${partialReasons.join('; ')}` : 'полный по данным архива'}.`);
   md.push('');
-  md.push('## Общая картина');
+  md.push(`## Ждут твоего ответа (${awaiting.length})`);
   md.push('');
-  if (!stories.length) md.push('За период в архиве нет сообщений с текстом.');
-  else if (overview) md.push(`*Вывод системы:* ${overview}`);
+  if (!awaiting.length) md.push('Ничего не ждёт.');
+  for (const a of awaiting) md.push(`- «${a.chat}»${a.from && a.from !== a.chat ? `, ${a.from}` : ''} — ${a.ask} (ждёт ${a.waitingHours} ч${a.unread ? ', не прочитано' : ''}; ${link(a)})`);
   md.push('');
-  const SECTIONS = [['Твои переписки', sections.own], ['Что происходило вокруг', sections.around]];
-  for (const [name, list] of SECTIONS) {
-    if (!list.length) continue;
-    md.push(`${name}:`);
-    for (const s of list) md.push(`${stories.indexOf(s) + 1}. ${s.text.title}`);
-    md.push('');
-  }
-  for (const [name, list] of SECTIONS) {
-    md.push(`## ${name}`);
-    if (!list.length) {
-      md.push('');
-      md.push('Нет сюжетов за период.');
-    }
-    for (const story of list) renderStory(story, stories.indexOf(story));
-    md.push('');
-  }
-  function renderStory(story, i) {
+  md.push(`## Ты обещал (${promises.length})`);
+  md.push('');
+  if (!promises.length) md.push(llm ? 'Обещаний не найдено.' : 'Без модели обещания не извлекаются.');
+  for (const p of promises) md.push(`- «${p.chat}» — ${p.text}${p.due ? `; срок: ${p.due}` : ''} (${link(p)})`);
+  md.push('');
+  md.push(`## Непрочитанное (${unreadChats} чат., ${unreadMessages} сообщ.)`);
+  for (const [i, story] of stories.entries()) {
     md.push('');
     md.push(`### ${i + 1}. ${story.text.title}`);
     md.push('');
-    if (story.text.summary) md.push(`*Вывод системы:* ${story.text.summary}`);
-    else md.push('*Вывод системы отсутствует:* приведены исходные сообщения.');
+    if (story.text.summary) md.push(story.text.summary);
     md.push('');
-    const why = [story.signals.personal && 'личный чат', story.signals.own && 'есть твои сообщения', story.signals.mentioned && 'упоминают тебя или отвечают тебе'].filter(Boolean);
-    md.push(`Источники (${story.chats.size} чат., ${story.messages.length} сообщ.)${why.length ? `; важно: ${why.join(', ')}` : ''}:`);
     for (const chunk of story.members) {
-      for (const m of chunk.messages.filter((x) => x.text).slice(0, 3)) {
+      for (const m of chunk.messages.filter((x) => x.text).slice(0, 2)) {
         md.push(`- «${chunk.title ?? chunk.chatId}», ${markdownLink(formatTime(m.sentAt, timeZone), m.link)} — ${m.sender ?? 'неизвестный'}: «${excerpt(m.text)}»`);
       }
-      if (chunk.messages.length > 3) md.push(`  - ещё ${chunk.messages.length - 3} сообщ. в этом фрагменте`);
     }
   }
-  if (automated.length) {
-    md.push('## Автоматические уведомления');
-    md.push('');
-    for (const a of automated) {
-      md.push(`- «${a.chat}» — ${a.messages} сообщ., последнее ${formatLocal(a.lastAt, timeZone)}`);
-      for (const k of a.kinds) md.push(`  - ${k.count > 1 ? `×${k.count} ` : ''}${k.text}`);
-    }
-    md.push('');
+  if (!stories.length) md.push('', 'Непрочитанного в группах и каналах нет.');
+  md.push('');
+  md.push(`## Тревожные уведомления (${alerts.length})`);
+  md.push('');
+  if (!alerts.length) md.push('Тревожных уведомлений ботов нет.');
+  for (const a of alerts) {
+    md.push(`- «${a.chat}», последнее ${formatLocal(a.lastAt, timeZone)}`);
+    for (const k of a.kinds) md.push(`  - ${k.count > 1 ? `×${k.count} ` : ''}${k.text}`);
   }
-  md.push('## Открытые вопросы и расхождения');
   md.push('');
-  const questions = stories.flatMap((s, i) => s.text.openQuestions.map((q) => `- (${i + 1}) ${q}`));
-  md.push(questions.length ? questions.join('\n') : '- Не выявлено моделью; это не гарантирует их отсутствия.');
+  md.push('## Покрытие и ограничения');
   md.push('');
-  md.push('## Покрытие');
-  md.push('');
-  md.push(`- Чатов с сообщениями за период: ${perChat.length}; сообщений: ${periodMessages}; во фрагментах сводки: ${chunks.length} фрагм.; в сюжеты вошло ${stories.length}.`);
-  md.push(`- Архив (окно ${summary.windowDays} сут.): покрыто ${summary.chats.covered} из ${summary.chats.available} доступных чатов; недоступно ${summary.chats.unavailable}.`);
-  if (incomplete.length) {
-    md.push('- Неполные или не сверенные источники:');
-    for (const c of incomplete.slice(0, 40)) {
-      const reason = c.errorCode ? `${STATE_LABELS[c.state] ?? c.state}, ${c.errorCode}` : (STATE_LABELS[c.state] ?? c.state);
-      md.push(`  - «${c.title ?? c.chatId}» — ${reason}${c.verifiedTo ? `, сверено до ${formatLocal(c.verifiedTo, timeZone)}` : ''}`);
-    }
-    if (incomplete.length > 40) md.push(`  - и ещё ${incomplete.length - 40}`);
-  }
-  md.push('- Числа покрытия не заменяют проверку содержания.');
-  md.push('');
-  md.push('## Ограничения');
-  md.push('');
+  md.push(`- Сообщений за период: ${periodMessages} в ${perChat.length} чатах. Архив: покрыто ${summary.chats.covered} из ${summary.chats.available} доступных чатов; недоступно ${summary.chats.unavailable}.`);
+  if (incomplete.length) md.push(`- Не сверены до конца периода: ${incomplete.slice(0, 10).map((c) => `«${c.title ?? c.chatId}» (${STATE_LABELS[c.state] ?? c.state}${c.errorCode ? `, ${c.errorCode}` : ''})`).join(', ')}${incomplete.length > 10 ? ` и ещё ${incomplete.length - 10}` : ''}.`);
   md.push(`- ${EDITS_LIMITATION}`);
-  md.push('- Черновик не обновляется автоматически после создания.');
-  md.push('- Секретные чаты не входят в архив.');
+  md.push('- Секретные чаты не входят в архив. Отметки прочтения обновляются при перечитывании диалогов (раз в 30 минут).');
   md.push('');
+
   const sourceOf = (chunk, m) => ({
     chat: chunk.title ?? String(chunk.chatId),
     at: m.sentAt instanceof Date ? m.sentAt.toISOString() : m.sentAt,
@@ -427,36 +391,36 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
     url: m.link?.url ?? null,
     ref: m.link?.ref ?? null,
   });
-  const storyData = (story) => ({
-    n: stories.indexOf(story) + 1,
-    title: story.text.title,
-    summary: story.text.summary,
-    openQuestions: story.text.openQuestions,
-    signals: story.signals,
-    chats: [...new Set(story.members.map((c) => c.title ?? String(c.chatId)))],
-    messages: story.messages.length,
-    sources: story.members.flatMap((c) => c.messages.filter((m) => m.text).slice(0, 2).map((m) => sourceOf(c, m))).slice(0, 6),
-  });
   const data = {
-    period: { start: start.toISOString(), end: end.toISOString(), timeZone, day: day ?? null },
+    version: 2,
+    period: { start: start.toISOString(), end: end.toISOString(), timeZone, day: day ?? null, awaitingSince: since.toISOString() },
     generatedAt: now.toISOString(),
     model: llm?.id ?? null,
     partial: partialReasons.length > 0,
     partialReasons,
-    overview,
-    sections: [
-      { id: 'own', title: 'Твои переписки', stories: sections.own.map(storyData) },
-      { id: 'around', title: 'Что происходило вокруг', stories: sections.around.map(storyData) },
-    ],
+    awaiting,
+    promises,
+    unread: {
+      chats: unreadChats,
+      messages: unreadMessages,
+      stories: stories.map((story, i) => ({
+        n: i + 1,
+        title: story.text.title,
+        summary: story.text.summary,
+        chats: [...new Set(story.members.map((c) => c.title ?? String(c.chatId)))],
+        messages: story.messages.length,
+        sources: story.members.flatMap((c) => c.messages.filter((m) => m.text).slice(0, 2).map((m) => sourceOf(c, m))).slice(0, 6),
+      })),
+    },
+    alerts,
+    readState,
     coverage: {
       chatsInPeriod: perChat.length,
       periodMessages,
-      chunks: chunks.length,
       archiveChatsCovered: summary.chats.covered,
       archiveChatsAvailable: summary.chats.available,
       incompleteChats: incomplete.length,
     },
-    automated,
     limitations: [EDITS_LIMITATION, 'Секретные чаты не входят в архив.'],
   };
   return {
@@ -465,10 +429,10 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
     meta: {
       day,
       account,
-      stories: stories.length,
-      ownStories: sections.own.length,
-      aroundStories: sections.around.length,
-      chunks: chunks.length,
+      awaiting: awaiting.length,
+      promises: promises.length,
+      unreadStories: stories.length,
+      alerts: alerts.length,
       periodMessages,
       chatsInPeriod: perChat.length,
       partial: partialReasons.length > 0,

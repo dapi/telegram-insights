@@ -107,14 +107,19 @@ export class ArchiveStore {
         top_message_id: d.topMessageId ?? null,
         top_message_at: d.topMessageAt instanceof Date ? d.topMessageAt.toISOString() : (d.topMessageAt ?? null),
         excluded: excluded.has(String(d.chatId)),
+        read_inbox_max_id: d.readInboxMaxId ?? null,
+        unread_count: d.unreadCount ?? null,
       }));
       const { rows: inserted } = await client.query(
         `INSERT INTO archive.chats AS c (account_id, chat_id, peer_kind, title, username, is_forum, dialog_rank,
-                                    top_message_id, top_message_at, in_dialogs, excluded, discovered_at, last_seen_at)
+                                    top_message_id, top_message_at, in_dialogs, excluded, discovered_at, last_seen_at,
+                                    read_inbox_max_id, unread_count, read_state_at)
          SELECT $1, x.chat_id, x.peer_kind, x.title, x.username, x.is_forum, x.dialog_rank,
-                x.top_message_id, x.top_message_at, true, x.excluded, $3, $3
+                x.top_message_id, x.top_message_at, true, x.excluded, $3, $3,
+                x.read_inbox_max_id, x.unread_count, CASE WHEN x.read_inbox_max_id IS NULL THEN NULL ELSE $3::timestamptz END
          FROM jsonb_to_recordset($2::jsonb) AS x(chat_id bigint, peer_kind text, title text, username text,
-              is_forum boolean, dialog_rank integer, top_message_id bigint, top_message_at timestamptz, excluded boolean)
+              is_forum boolean, dialog_rank integer, top_message_id bigint, top_message_at timestamptz, excluded boolean,
+              read_inbox_max_id bigint, unread_count integer)
          ON CONFLICT (account_id, chat_id) DO UPDATE SET
            peer_kind = EXCLUDED.peer_kind,
            title = EXCLUDED.title,
@@ -125,7 +130,10 @@ export class ArchiveStore {
            top_message_at = GREATEST(c.top_message_at, EXCLUDED.top_message_at),
            in_dialogs = true,
            excluded = EXCLUDED.excluded,
-           last_seen_at = EXCLUDED.last_seen_at
+           last_seen_at = EXCLUDED.last_seen_at,
+           read_inbox_max_id = COALESCE(EXCLUDED.read_inbox_max_id, c.read_inbox_max_id),
+           unread_count = COALESCE(EXCLUDED.unread_count, c.unread_count),
+           read_state_at = COALESCE(EXCLUDED.read_state_at, c.read_state_at)
          RETURNING chat_id, (xmax = 0) AS created`,
         [accountId, JSON.stringify(payload), now.toISOString()],
       );

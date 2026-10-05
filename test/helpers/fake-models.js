@@ -41,8 +41,14 @@ export class FakeChat {
     return 'fake:chat';
   }
 
-  async complete({ prompt, json }) {
+  async complete({ system = '', prompt, json }) {
     this.prompts.push(prompt);
+    if (json && system.includes('needs_reply')) {
+      return JSON.stringify({ needs_reply: /\?|подтверди/i.test(prompt), ask: 'Синтетическая просьба' });
+    }
+    if (json && system.includes('promises')) {
+      return JSON.stringify({ promises: [{ i: 1, text: 'Синтетическое обещание', due: 'пятница' }] });
+    }
     if (json) {
       const first = /\] [^:]+: (.{0,40})/.exec(prompt)?.[1] ?? 'сюжет';
       return JSON.stringify({ title: `Сюжет: ${first}`, summary: 'Синтетический пересказ сюжета.', open_questions: [] });

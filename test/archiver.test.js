@@ -264,6 +264,19 @@ describe('errors and FLOOD_WAIT', () => {
     expect(chats.find((c) => c.chatId === '-1001000000002').state).toBe('loaded');
   });
 
+  it('stores the read marker and unread counter from the dialogs list', async () => {
+    const clock = virtualClock();
+    const tg = standardAccount(clock);
+    const [chat] = [...tg.chats.values()].filter((c) => c.messages.length > 1);
+    chat.readInboxMaxId = chat.messages[0].messageId;
+    const archiver = await startArchiver(pool, tg, clock);
+    await drain(archiver);
+    const { rows: [row] } = await pool.query('SELECT read_inbox_max_id, unread_count, read_state_at FROM archive.chats WHERE chat_id = $1', [chat.chatId]);
+    expect(Number(row.read_inbox_max_id)).toBe(chat.messages[0].messageId);
+    expect(row.unread_count).toBe(chat.messages.length - 1);
+    expect(row.read_state_at).not.toBeNull();
+  });
+
   it('passes the chat username to history requests for peer recovery', async () => {
     const clock = virtualClock();
     const tg = standardAccount(clock);

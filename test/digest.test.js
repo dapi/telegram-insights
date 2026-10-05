@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { clusterChunks, isAutomated, selectStories, storyPrompt, storyScore, summarizeAutomated } from '../src/digest/digest.js';
+import { alarmingNotifications, extractPromises } from '../src/digest/actions.js';
+import { clusterChunks, isAutomated, storyPrompt, storyScore, summarizeAutomated, unreadChunks } from '../src/digest/digest.js';
 
 const at = (hh, mm = 0) => new Date(Date.UTC(2026, 9, 4, hh, mm));
 
@@ -92,16 +93,6 @@ describe('storyScore', () => {
   });
 });
 
-describe('selectStories', () => {
-  it('keeps separate quotas for the owner and for the rest', () => {
-    const story = (own, n) => ({ n, signals: { personal: false, own, mentioned: false } });
-    const ranked = [story(true, 1), story(true, 2), story(true, 3), story(false, 4), story(false, 5)];
-    const { own, around } = selectStories(ranked, { maxOwn: 2, maxAround: 1 });
-    expect(own.map((s) => s.n)).toEqual([1, 2]);
-    expect(around.map((s) => s.n)).toEqual([4]);
-  });
-});
-
 describe('story linking', () => {
   it('joins a reply to the story of the message it answers', () => {
     const congrats = chunk('1', [1, 0, 0], ['С днём рождения!'], { hour: 9 });
@@ -143,5 +134,49 @@ describe('automated fragments', () => {
     expect(entry).toMatchObject({ chat: 'Алерты', messages: 3 });
     expect(entry.kinds[0]).toEqual({ text: 'CPU 0.77 high', count: 2 });
     expect(entry.kinds[1]).toEqual({ text: 'MinIO replica lag', count: 1 });
+  });
+});
+
+describe('unreadChunks', () => {
+  it('keeps group messages above the read marker and skips personal chats', () => {
+    const group = chunk('-1', null, ['старое', 'новое'], { title: 'Группа' });
+    group.peerKind = 'supergroup';
+    group.readInboxMaxId = group.messages[0].messageId;
+    const personal = chunk('7', null, ['личное']);
+    personal.peerKind = 'user';
+    const [only] = unreadChunks([group, personal]);
+    expect(only.messages.map((m) => m.text)).toEqual(['новое']);
+  });
+
+  it('without a read marker treats only chats the owner did not write in as unread', () => {
+    const quiet = chunk('-2', null, ['пост'], { title: 'Канал' });
+    quiet.peerKind = 'channel';
+    const active = chunk('-3', null, ['вопрос', 'мой ответ'], { title: 'Обсуждение' });
+    active.peerKind = 'supergroup';
+    active.messages[1].own = true;
+    expect(unreadChunks([quiet, active]).map((c) => c.title)).toEqual(['Канал']);
+  });
+});
+
+describe('alarmingNotifications', () => {
+  it('keeps failures and drops routine reports and recoveries', () => {
+    const [entry, ...rest] = alarmingNotifications([
+      { chat: 'Алерты', kinds: [{ text: 'MinIO replica lag 45m', count: 2 }, { text: 'Backup finished', count: 1 }, { text: 'MinIO resolved', count: 1 }] },
+      { chat: 'Вакансии', kinds: [{ text: 'Senior Java Developer', count: 3 }] },
+    ]);
+    expect(entry.kinds.map((k) => k.text)).toEqual(['MinIO replica lag 45m']);
+    expect(rest).toEqual([]);
+  });
+});
+
+describe('extractPromises', () => {
+  it('maps model answers back to the owner messages they came from', async () => {
+    const messages = [
+      { chat: 'Иван', sentAt: at(9), text: 'Пришлю смету завтра к обеду', link: { url: null, ref: 'tgi:1/1' } },
+      { chat: 'Мария', sentAt: at(10), text: 'Посмотрю договор вечером', link: { url: null, ref: 'tgi:2/5' } },
+    ];
+    const llm = { id: 'stub', complete: async () => JSON.stringify({ promises: [{ i: 2, text: 'Посмотреть договор', due: 'вечер' }, { i: 9, text: 'нет такого' }] }) };
+    expect(await extractPromises(llm, messages)).toEqual([{ chat: 'Мария', text: 'Посмотреть договор', due: 'вечер', at: at(10).toISOString(), url: null, ref: 'tgi:2/5' }]);
+    expect(await extractPromises(null, messages)).toEqual([]);
   });
 });

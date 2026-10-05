@@ -110,6 +110,9 @@ export class FakeTelegram {
         isForum: chat.isForum,
         topMessageId: top?.messageId ?? null,
         topMessageAt: top?.sentAt ?? null,
+        readInboxMaxId: chat.readInboxMaxId ?? null,
+        unreadCount: chat.readInboxMaxId === undefined ? null
+          : chat.messages.filter((m) => m.messageId > chat.readInboxMaxId && m.senderId !== this.self.id).length,
       };
     });
     dialogs.sort((a, b) => (b.topMessageAt?.getTime() ?? 0) - (a.topMessageAt?.getTime() ?? 0));

@@ -223,50 +223,42 @@ describe('cross-chat search and answers', () => {
 });
 
 describe('daily digest draft', () => {
-  it('merges reposts across chats, cites sources and marks partial coverage', async () => {
+  it('shows what needs the owner: awaiting replies, promises, unread groups and coverage', async () => {
     const llm = new FakeChat();
-    const { markdown, meta } = await buildDigest({ pool, llm, day: DAY, now: new Date(clock.now()) });
-    expect(meta.stories).toBeGreaterThan(0);
+    const { markdown, meta, data } = await buildDigest({ pool, llm, day: DAY, now: new Date(clock.now()) });
     expect(meta.periodMessages).toBe(8);
-    const repostStory = markdown.split('### ').find((s) => s.includes('Новости конференции') && s.includes('Закрытый канал организаторов'));
-    expect(repostStory).toBeTruthy();
-    expect(repostStory).toMatch(/https:\/\/t\.me\/conf_news\/1/);
-    expect(repostStory).toMatch(/https:\/\/t\.me\/c\/1000000011\/1/);
-    expect(markdown).toMatch(/\*Вывод системы:\*/);
-    expect(markdown).toMatch(/## Покрытие/);
-    expect(markdown).toMatch(/Недоступный канал/);
+    // Ivan's request was answered by the owner, so it does not wait.
+    expect(data.awaiting).toEqual([]);
+    expect(data.promises[0]).toMatchObject({ chat: 'Иван (синтетический)', text: 'Синтетическое обещание', due: 'пятница' });
+    // Without read markers yet, unread falls back to chats the owner did not write in.
+    const unreadChats = data.unread.stories.flatMap((s) => s.chats);
+    expect(unreadChats).toContain('Новости конференции');
+    expect(unreadChats).not.toContain('Иван (синтетический)');
+    const repost = data.unread.stories.find((s) => s.chats.includes('Новости конференции') && s.chats.includes('Закрытый канал организаторов'));
+    expect(repost.sources.map((x) => x.url)).toContain('https://t.me/conf_news/1');
+    expect(markdown).toMatch(/## Ждут твоего ответа \(0\)/);
+    expect(markdown).toMatch(/## Ты обещал \(1\)/);
+    expect(markdown).toMatch(/## Непрочитанное/);
     expect(markdown).toMatch(/\*\*частичный\*\*/);
+    expect(markdown).toMatch(/отметки прочтения есть для 0/);
     expect(markdown).not.toMatch(/Вчерашний разговор/);
-    expect(meta.partial).toBe(true);
-    const personal = markdown.split('### ').find((s) => s.includes('Иван (синтетический)'));
-    expect(personal).toMatch(/важно: личный чат, есть твои сообщения/);
-    const [, own, around] = markdown.split(/^## (?:Твои переписки|Что происходило вокруг)$/m);
-    expect(own).toMatch(/Иван \(синтетический\)/);
-    expect(around).toMatch(/Новости конференции/);
-    expect(around).not.toMatch(/Иван \(синтетический\)/);
-    expect(meta.ownStories).toBe(1);
   });
 
-  it('builds a rolling window and structured stories for other consumers', async () => {
-    const end = new Date(`${DAY}T14:00:00Z`);
+  it('finds a request still waiting for the owner in a rolling window', async () => {
+    // Ends between Ivan's request (15:20 MSK) and the owner's answer (15:25).
+    const end = new Date(`${DAY}T12:22:00Z`);
     const { data, markdown } = await buildDigest({ pool, llm: new FakeChat(), range: { start: new Date(end.getTime() - 24 * 3_600_000), end }, now: end });
-    expect(markdown).not.toMatch(/за null/);
     expect(data.period.day).toBeNull();
-    const [own, around] = data.sections;
-    expect(own.id).toBe('own');
-    expect(own.stories.map((s) => s.chats).flat()).toContain('Иван (синтетический)');
-    expect(around.stories.some((s) => s.chats.includes('Новости конференции'))).toBe(true);
-    const story = own.stories[0];
-    expect(story.summary).toBe('Синтетический пересказ сюжета.');
-    expect(story.sources[0]).toMatchObject({ chat: 'Иван (синтетический)', ref: expect.stringMatching(/^tgi:601\//) });
-    expect(data.coverage.periodMessages).toBe(8);
+    expect(data.awaiting).toHaveLength(1);
+    expect(data.awaiting[0]).toMatchObject({ chat: 'Иван (синтетический)', personal: true, ask: 'Синтетическая просьба', ref: expect.stringMatching(/^tgi:601\//) });
+    expect(markdown).toMatch(/## Ждут твоего ответа \(1\)/);
   });
 
-  it('still produces an extractive draft without a model', async () => {
+  it('still produces a draft without a model', async () => {
     const { markdown, meta } = await buildDigest({ pool, llm: null, day: DAY, now: new Date(clock.now()) });
     expect(meta.model).toBeNull();
-    expect(markdown).toMatch(/Вывод системы отсутствует/);
-    expect(markdown).toMatch(/локальная модель не использовалась/);
+    expect(markdown).toMatch(/Без модели обещания не извлекаются/);
+    expect(markdown).toMatch(/модель не использовалась/);
   });
 });
 

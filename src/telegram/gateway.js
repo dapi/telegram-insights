@@ -195,6 +195,8 @@ export class MtcuteGateway {
           rank: result.length,
           topMessageId: last ? Number(last.id) : null,
           topMessageAt: last ? toDate(last.date) : null,
+          readInboxMaxId: Number.isFinite(dialog.raw?.readInboxMaxId) ? Number(dialog.raw.readInboxMaxId) : null,
+          unreadCount: Number.isFinite(dialog.raw?.unreadCount) ? Number(dialog.raw.unreadCount) : null,
         });
       }
     } catch (error) {
