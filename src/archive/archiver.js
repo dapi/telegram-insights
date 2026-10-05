@@ -10,8 +10,26 @@ const DEFAULTS = {
   liveBufferLimit: 20_000,
   heartbeatMs: 60_000,
   idleMs: 5_000,
+  requestTimeoutMs: 90_000,
   excludedChats: [],
 };
+
+class RequestTimeout extends Error {
+  constructor(ms) {
+    super(`Telegram request did not finish within ${ms} ms`);
+    this.code = 'TIMEOUT';
+  }
+}
+
+// A hung MTProto call must not stall the whole scheduler; the abandoned
+// promise is left to settle on its own.
+function withTimeout(promise, ms) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new RequestTimeout(ms)), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 // Orchestrates one account: live intake first, then fair paged backfill and
 // periodic gap reconciliation. All progress lives in PostgreSQL.
@@ -118,9 +136,9 @@ export class Archiver {
   }
 
   async refreshDialogs() {
-    const dialogs = await this.gateway.listDialogs({
+    const dialogs = await withTimeout(this.gateway.listDialogs({
       beforeChunk: () => this.limiter.acquire(),
-    });
+    }), this.options.requestTimeoutMs * 20);
     const result = await this.store.syncDialogs(this.accountId, dialogs, {
       windowDays: this.options.windowDays,
       excluded: this.excluded,
@@ -168,16 +186,16 @@ export class Archiver {
     await this.limiter.acquire();
     let page;
     try {
-      page = task.kind === 'backfill'
-        ? await this.gateway.getHistoryPage(task.chat_id, {
+      page = await withTimeout(task.kind === 'backfill'
+        ? this.gateway.getHistoryPage(task.chat_id, {
           offsetId: Number(task.backfill_offset_id ?? 0),
           limit: this.options.pageSize,
         })
-        : await this.gateway.getHistoryPage(task.chat_id, {
+        : this.gateway.getHistoryPage(task.chat_id, {
           offsetId: Number(task.gap_offset_id ?? 0),
           minId: Number(task.gap_min_id ?? 0),
           limit: this.options.pageSize,
-        });
+        }), this.options.requestTimeoutMs);
     } catch (error) {
       await this.handleTelegramError(task, error);
       return true;

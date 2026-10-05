@@ -324,6 +324,22 @@ describe('errors and FLOOD_WAIT', () => {
   });
 });
 
+describe('hung requests', () => {
+  it('gives up on a Telegram request that never answers and keeps serving other chats', async () => {
+    const clock = virtualClock();
+    const tg = standardAccount(clock);
+    const real = tg.getHistoryPage.bind(tg);
+    tg.getHistoryPage = (chatId, opts) => (chatId === '502' ? new Promise(() => {}) : real(chatId, opts));
+    const archiver = await startArchiver(pool, tg, clock, { requestTimeoutMs: 50 });
+    await drain(archiver);
+    const { chats } = await coverageReport(pool, { now: new Date(clock.now()) });
+    const hung = chats.find((c) => c.chatId === '502');
+    expect(hung.state).toBe('error');
+    expect(hung.errorCode).toBe('TIMEOUT');
+    expect(chats.filter((c) => c.chatId !== '502').every((c) => c.state === 'loaded')).toBe(true);
+  });
+});
+
 describe('dialog list quirks', () => {
   it('tolerates a chat listed twice in the dialogs', async () => {
     const clock = virtualClock();
