@@ -249,6 +249,16 @@ describe('new messages and gaps', () => {
 });
 
 describe('errors and FLOOD_WAIT', () => {
+  it('passes the chat username to history requests for peer recovery', async () => {
+    const clock = virtualClock();
+    const tg = standardAccount(clock);
+    tg.addChat({ chatId: '478', peerKind: 'user', title: 'Синтетический собеседник', username: 'synthetic_user' });
+    tg.addMessage('478', { text: 'привет', sentAt: new Date(clock.now() - 3_600_000) }, { live: false });
+    const archiver = await startArchiver(pool, tg, clock);
+    await drain(archiver);
+    expect(tg.historyCalls('478')[0].username).toBe('synthetic_user');
+  });
+
   it('marks inaccessible chats as unavailable without hiding them in the totals', async () => {
     const clock = virtualClock();
     const tg = standardAccount(clock);

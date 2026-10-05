@@ -3,13 +3,18 @@ import { messageLink } from '../links.js';
 
 const RRF_K = 60;
 
-// Natural-language questions rarely match with AND semantics, so the text side
-// ORs the words and lets ranking prefer chunks that contain more of them.
-export function orQuery(text) {
+// Words of a natural-language query for full-text matching (3+ letters/digits).
+export function queryTerms(text) {
   const words = String(text)
     .toLowerCase()
     .match(/[\p{L}\p{N}]{3,}/gu) ?? [];
-  return [...new Set(words)].slice(0, 24).join(' | ');
+  return [...new Set(words)].slice(0, 24);
+}
+
+// Natural-language questions rarely match with AND semantics, so the text side
+// ORs the words and lets ranking prefer chunks that contain more of them.
+export function orQuery(text) {
+  return queryTerms(text).join(' | ');
 }
 
 export class SearchService {
@@ -20,18 +25,37 @@ export class SearchService {
     this.timeZone = timeZone;
   }
 
+  // Postgres ts_rank has no notion of term rarity, so with OR semantics common
+  // words ("агентами", "подписка") outrank the one rare word that identifies the
+  // message. Each matched term adds its BM25 idf instead; ts_rank_cd breaks ties.
+  // CTEs are MATERIALIZED so document frequencies are computed once per query.
   async textCandidates(accountId, query, { from, to, limit, chatId = null }) {
-    const tsq = orQuery(query);
-    if (!tsq) return [];
+    const terms = queryTerms(query);
+    if (!terms.length) return [];
     const { rows } = await this.pool.query(
-      `WITH q AS (SELECT to_tsquery('russian', $2) || to_tsquery('simple', $2) AS q)
-       SELECT chat_id, topic_key, bucket_start, part, ts_rank_cd(tsv, q.q) AS score
-       FROM search.chunks, q
-       WHERE account_id = $1 AND tsv @@ q.q
-         AND ($3::timestamptz IS NULL OR last_sent_at >= $3) AND ($4::timestamptz IS NULL OR first_sent_at < $4)
-         AND ($6::bigint IS NULL OR chat_id = $6)
-       ORDER BY score DESC, last_sent_at DESC LIMIT $5`,
-      [accountId, tsq, from, to, limit, chatId],
+      `WITH terms AS MATERIALIZED (
+         SELECT to_tsquery('russian', t) || to_tsquery('simple', t) AS q FROM unnest($2::text[]) AS t
+       ), total AS MATERIALIZED (
+         SELECT count(*)::float8 AS n FROM search.chunks WHERE account_id = $1
+       ), weights AS MATERIALIZED (
+         SELECT terms.q, ln(1 + (total.n - df.n + 0.5) / (df.n + 0.5)) AS idf
+         FROM terms, total,
+           LATERAL (SELECT count(*)::float8 AS n FROM search.chunks c WHERE c.account_id = $1 AND c.tsv @@ terms.q) AS df
+         WHERE df.n > 0
+       ), anyq AS MATERIALIZED (
+         SELECT string_agg(q::text, ' | ')::tsquery AS q FROM weights
+       ), cand AS MATERIALIZED (
+         SELECT c.chat_id, c.topic_key, c.bucket_start, c.part, c.last_sent_at, c.tsv, ts_rank_cd(c.tsv, anyq.q) AS tie
+         FROM search.chunks c, anyq
+         WHERE c.account_id = $1 AND c.tsv @@ anyq.q
+           AND ($3::timestamptz IS NULL OR c.last_sent_at >= $3) AND ($4::timestamptz IS NULL OR c.first_sent_at < $4)
+           AND ($6::bigint IS NULL OR c.chat_id = $6)
+       )
+       SELECT cand.chat_id, cand.topic_key, cand.bucket_start, cand.part, sum(weights.idf) AS score
+       FROM cand JOIN weights ON cand.tsv @@ weights.q
+       GROUP BY cand.chat_id, cand.topic_key, cand.bucket_start, cand.part, cand.last_sent_at, cand.tie
+       ORDER BY score DESC, cand.tie DESC, cand.last_sent_at DESC LIMIT $5`,
+      [accountId, terms, from, to, limit, chatId],
     );
     return rows;
   }

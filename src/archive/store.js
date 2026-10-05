@@ -216,7 +216,7 @@ export class ArchiveStore {
   // reconciliation before backfill, and more recently active dialogs first.
   async nextTask(accountId) {
     const { rows } = await this.pool.query(
-      `SELECT s.*, c.peer_kind, c.top_message_id
+      `SELECT s.*, c.peer_kind, c.top_message_id, c.username
        FROM archive.chat_sync s JOIN archive.chats c USING (account_id, chat_id)
        WHERE s.account_id = $1 AND NOT c.excluded AND c.in_dialogs
          AND (s.next_attempt_at IS NULL OR s.next_attempt_at <= $2)

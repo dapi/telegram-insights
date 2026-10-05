@@ -205,9 +205,23 @@ export class MtcuteGateway {
 
   // One messages.getHistory call, newest first. FLOOD_WAIT is never retried here:
   // the archiver's limiter owns waiting so the pause is persisted and visible.
-  async getHistoryPage(chatId, { offsetId = 0, minId = 0, limit = 100 }) {
+  // A user whose access hash is missing from the session cache fails with
+  // PEER_ID_INVALID; resolving the public username restores it. The resolved
+  // peer must be the same user, otherwise the original error stands.
+  async resolveChat(chatId, username) {
     try {
-      const peer = await this.mt.resolvePeer(Number(chatId));
+      return await this.mt.resolvePeer(Number(chatId));
+    } catch (error) {
+      if (!username) throw error;
+      const peer = await this.mt.resolvePeer(username);
+      if (peer._ !== 'inputPeerUser' || String(peer.userId) !== String(chatId)) throw error;
+      return peer;
+    }
+  }
+
+  async getHistoryPage(chatId, { offsetId = 0, minId = 0, limit = 100, username = null }) {
+    try {
+      const peer = await this.resolveChat(chatId, username);
       const res = await this.mt.call({
         _: 'messages.getHistory',
         peer,

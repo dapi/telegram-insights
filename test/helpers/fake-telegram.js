@@ -116,8 +116,8 @@ export class FakeTelegram {
     return dialogs.map((d, rank) => ({ ...d, rank }));
   }
 
-  async getHistoryPage(chatId, { offsetId = 0, minId = 0, limit = 100 }) {
-    this.calls.push({ method: 'getHistory', chatId: String(chatId), offsetId, minId, limit, at: this.now() });
+  async getHistoryPage(chatId, { offsetId = 0, minId = 0, limit = 100, username = null }) {
+    this.calls.push({ method: 'getHistory', chatId: String(chatId), offsetId, minId, limit, username, at: this.now() });
     if (this.beforeHistory) await this.beforeHistory({ chatId: String(chatId), offsetId, minId });
     this._maybeFail('getHistory', chatId);
     const chat = this.chats.get(String(chatId));

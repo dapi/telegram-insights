@@ -131,6 +131,14 @@ describe('cross-chat search and answers', () => {
     expect(found.results[0].chatId).toBe('-1001000000012');
   });
 
+  it('ranks a chunk with rare query words above chunks that repeat common ones', async () => {
+    const textOnly = new SearchService({ pool, embedder: null });
+    const found = await textOnly.search('мерч футболки бюджет питание', { limit: 3 });
+    expect(found.mode).toBe('text');
+    expect(found.results[0].chatId).toBe('-1001000000012');
+    expect(found.results[0].messages.some((m) => m.text.includes('футболки') && !m.context)).toBe(true);
+  });
+
   it('answers with source references, coverage and the edits limitation', async () => {
     const service = new SearchService({ pool, embedder });
     const { text } = await answerQuestion({ search: service, llm: new FakeChat(), question: 'Какой бюджет конференции?' });

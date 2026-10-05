@@ -1,7 +1,7 @@
 import { Long, Message, PeersIndex } from '@mtcute/core';
 import { describe, expect, it } from 'vitest';
 
-import { classifyTelegramError, normalizeMessage, peerKind } from '../src/telegram/gateway.js';
+import { MtcuteGateway, classifyTelegramError, normalizeMessage, peerKind } from '../src/telegram/gateway.js';
 
 const users = [{ _: 'user', id: 42, accessHash: Long.fromNumber(1), firstName: 'Синтетический', lastName: 'Автор', username: 'synthetic_author' }];
 const chats = [
@@ -48,5 +48,26 @@ describe('mtcute gateway normalization', () => {
     expect(flood).toMatchObject({ code: 'FLOOD_WAIT', waitSeconds: 37 });
     expect(classifyTelegramError(new Error('A wait of 12 seconds is required')).waitSeconds).toBe(12);
     expect(classifyTelegramError({ text: 'CHANNEL_PRIVATE' }).code).toBe('CHANNEL_PRIVATE');
+  });
+});
+
+describe('resolveChat', () => {
+  const missing = Object.assign(new Error('PEER_ID_INVALID'), { code: 400, text: 'PEER_ID_INVALID' });
+  const mt = (byUsername) => ({
+    async resolvePeer(id) {
+      if (typeof id === 'number') throw missing;
+      return byUsername;
+    },
+  });
+  const resolve = (stub, chatId, username) => MtcuteGateway.prototype.resolveChat.call({ mt: stub }, chatId, username);
+
+  it('restores a user without a cached access hash through the username', async () => {
+    const peer = { _: 'inputPeerUser', userId: 478, accessHash: Long.fromNumber(9) };
+    await expect(resolve(mt(peer), '478', 'synthetic_user')).resolves.toBe(peer);
+  });
+
+  it('keeps the original error without a username or when the username is someone else', async () => {
+    await expect(resolve(mt(null), '478', null)).rejects.toBe(missing);
+    await expect(resolve(mt({ _: 'inputPeerUser', userId: 999 }), '478', 'other')).rejects.toBe(missing);
   });
 });

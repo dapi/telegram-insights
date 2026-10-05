@@ -190,11 +190,13 @@ export class Archiver {
         ? this.gateway.getHistoryPage(task.chat_id, {
           offsetId: Number(task.backfill_offset_id ?? 0),
           limit: this.options.pageSize,
+          username: task.username,
         })
         : this.gateway.getHistoryPage(task.chat_id, {
           offsetId: Number(task.gap_offset_id ?? 0),
           minId: Number(task.gap_min_id ?? 0),
           limit: this.options.pageSize,
+          username: task.username,
         }), this.options.requestTimeoutMs);
     } catch (error) {
       await this.handleTelegramError(task, error);
