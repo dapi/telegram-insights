@@ -22,8 +22,9 @@ case "$command" in
   migrate)
     TI_OWNER_DATABASE_URL="$(dsn owner)"; export TI_OWNER_DATABASE_URL ;;
   run|login)
-    TELEGRAM_API_ID="$(secret telegram-app/id)"; export TELEGRAM_API_ID
-    TELEGRAM_API_HASH="$(secret telegram-app/api_hash)"; export TELEGRAM_API_HASH
+    # The session is a copy of tgcli's authorization, so use tgcli's API app.
+    eval "$(python3 -c 'import json,os,shlex;d=json.load(open(os.path.expanduser("~/Library/Application Support/tgcli/config.json")));print("TELEGRAM_API_ID="+shlex.quote(str(d["apiId"]))+"; TELEGRAM_API_HASH="+shlex.quote(d["apiHash"]))')"
+    export TELEGRAM_API_ID TELEGRAM_API_HASH
     TI_ARCHIVER_DATABASE_URL="$(dsn archiver)"; export TI_ARCHIVER_DATABASE_URL
     TI_INDEXER_DATABASE_URL="$(dsn indexer)"; export TI_INDEXER_DATABASE_URL ;;
   index)
