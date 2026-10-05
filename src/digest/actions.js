@@ -42,7 +42,7 @@ async function askJson(llm, system, prompt, stats = {}) {
 
 // Incoming messages after the owner's last message in the same thread, from
 // personal chats or addressed to the owner (mention or reply) in groups.
-export async function loadAwaitingCandidates(pool, accountId, { since, end, maxThreads = 20 }) {
+export async function loadAwaitingCandidates(pool, accountId, { since, end, maxThreads = 30 }) {
   const { rows: [account] } = await pool.query('SELECT username FROM archive.accounts WHERE account_id = $1', [accountId]);
   const mention = account?.username ? `@${account.username.toLowerCase()}` : null;
   const { rows } = await pool.query(
