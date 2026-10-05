@@ -113,10 +113,15 @@ export function buildProgram() {
     .option('--qr', 'log in by scanning a QR code')
     .option('--code-file <path>', 'read the login code from this file instead of the terminal')
     .option('--sms', 'ask Telegram to resend the code by SMS')
+    .option('--password-pass <entry>', 'read the Telegram cloud password (2FA) from this pass entry')
     .option('--qr-file <path>', 'with --qr: write the login URL to this owner-only file for approval by another session')
     .action(async (opts) => {
       const config = loadConfig();
       const loginOptions = { useQr: Boolean(opts.qr), forceSms: Boolean(opts.sms) };
+      if (opts.passwordPass) {
+        const { execFileSync } = await import('node:child_process');
+        loginOptions.passwordProvider = async () => execFileSync('pass', ['show', opts.passwordPass], { encoding: 'utf8' }).split('\n')[0];
+      }
       if (opts.qrFile) {
         loginOptions.useQr = true;
         loginOptions.qrUrlHandler = (url) => {
