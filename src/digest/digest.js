@@ -44,6 +44,12 @@ function addInto(sum, v) {
   return sum;
 }
 
+// Story importance: breadth across chats and volume, plus what concerns the
+// account owner — a personal chat, their own messages, a mention or reply to them.
+export function storyScore({ chats, messages, personal = false, own = false, mentioned = false }) {
+  return 2 * chats + Math.log2(1 + messages) + (personal ? 3 : 0) + (own ? 3 : 0) + (mentioned ? 3 : 0);
+}
+
 // Groups chunks into stories: identical long texts (reposts, forwards) always
 // merge; otherwise a chunk joins the closest story centroid (running mean of
 // member embeddings) — at `sameChatThreshold` when the story already holds
@@ -96,12 +102,17 @@ export function clusterChunks(chunks, { threshold = 0.8, sameChatThreshold = 0.7
     const ranked = members.map((m) => ({ ...m, centrality: centroid && m.vector ? cosine(m.vector, centroid) : 0 }));
     const chats = new Set(ranked.map((m) => m.chatId));
     const messages = ranked.flatMap((m) => m.messages);
-    const channelPosts = ranked.filter((m) => m.peerKind === 'channel').length;
+    const signals = {
+      personal: ranked.some((m) => m.peerKind === 'user'),
+      own: messages.some((m) => m.own),
+      mentioned: messages.some((m) => m.mentionsMe || m.replyToMe),
+    };
     return {
       members: ranked,
       chats,
       messages,
-      score: 2 * chats.size + Math.log2(1 + messages.length) + 0.5 * Math.min(channelPosts, 3),
+      signals,
+      score: storyScore({ chats: chats.size, messages: messages.length, ...signals }),
     };
   }).sort((a, b) => b.score - a.score);
 }
@@ -137,6 +148,8 @@ function excerpt(text, max = 220) {
 }
 
 async function loadChunks(pool, accountId, start, end) {
+  const { rows: [account] } = await pool.query('SELECT username FROM archive.accounts WHERE account_id = $1', [accountId]);
+  const mention = account?.username ? `@${account.username.toLowerCase()}` : null;
   const { rows } = await pool.query(
     `SELECT c.chat_id, c.topic_key, c.bucket_start, c.part, c.message_ids, c.first_sent_at, c.last_sent_at, c.embedding,
             ch.title, ch.peer_kind, ch.username
@@ -148,8 +161,11 @@ async function loadChunks(pool, accountId, start, end) {
   const chunks = [];
   for (const row of rows) {
     const { rows: messages } = await pool.query(
-      `SELECT message_id, topic_id, sent_at, sender_name, text FROM archive.messages
-       WHERE account_id = $1 AND chat_id = $2 AND message_id = ANY($3::bigint[]) ORDER BY sent_at, message_id`,
+      `SELECT m.message_id, m.topic_id, m.sent_at, m.sender_name, m.text,
+              m.sender_id = m.account_id AS own, r.sender_id = m.account_id AS reply_to_me
+       FROM archive.messages m
+       LEFT JOIN archive.messages r ON r.account_id = m.account_id AND r.chat_id = m.chat_id AND r.message_id = m.reply_to_id
+       WHERE m.account_id = $1 AND m.chat_id = $2 AND m.message_id = ANY($3::bigint[]) ORDER BY m.sent_at, m.message_id`,
       [accountId, row.chat_id, row.message_ids],
     );
     chunks.push({
@@ -163,6 +179,9 @@ async function loadChunks(pool, accountId, start, end) {
         sentAt: m.sent_at,
         sender: m.sender_name,
         text: m.text,
+        own: Boolean(m.own),
+        replyToMe: Boolean(m.reply_to_me),
+        mentionsMe: Boolean(mention && String(m.text ?? '').toLowerCase().includes(mention)),
         link: messageLink({ chatId: row.chat_id, messageId: Number(m.message_id), topicId: m.topic_id, peerKind: row.peer_kind, username: row.username }),
       })),
     });
@@ -258,7 +277,8 @@ export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ
     if (story.text.summary) md.push(`*Вывод системы:* ${story.text.summary}`);
     else md.push('*Вывод системы отсутствует:* приведены исходные сообщения.');
     md.push('');
-    md.push(`Источники (${story.chats.size} чат., ${story.messages.length} сообщ.):`);
+    const why = [story.signals.personal && 'личный чат', story.signals.own && 'есть твои сообщения', story.signals.mentioned && 'упоминают тебя или отвечают тебе'].filter(Boolean);
+    md.push(`Источники (${story.chats.size} чат., ${story.messages.length} сообщ.)${why.length ? `; важно: ${why.join(', ')}` : ''}:`);
     for (const chunk of story.members) {
       for (const m of chunk.messages.filter((x) => x.text).slice(0, 3)) {
         md.push(`- «${chunk.title ?? chunk.chatId}», ${markdownLink(formatTime(m.sentAt, timeZone), m.link)} — ${m.sender ?? 'неизвестный'}: «${excerpt(m.text)}»`);

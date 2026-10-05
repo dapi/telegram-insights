@@ -41,7 +41,7 @@ beforeAll(async () => {
   tg.addMessage('-1001000000012', { text: 'Договор с площадкой готовит Мария, срок пятница.', sentAt: at(11, 3), topicId: 7 }, { live: false });
   tg.addMessage('-1001000000012', { text: 'В другой теме обсуждаем мерч и футболки.', sentAt: at(11, 4), topicId: 9 }, { live: false });
   tg.addMessage('601', { text: 'Бюджет конференции увеличили до 500 тысяч, подтверди питание.', sentAt: at(15, 20) }, { live: false });
-  tg.addMessage('601', { text: 'Подтверждаю питание на 120 человек.', sentAt: at(15, 25) }, { live: false });
+  tg.addMessage('601', { text: 'Подтверждаю питание на 120 человек.', sentAt: at(15, 25), senderId: '777000111', senderName: 'Владелец' }, { live: false });
   tg.addMessage('601', { text: 'Вчерашний разговор про отпуск.', sentAt: at(-10, 0) }, { live: false });
   archiver = await startArchiver(pool, tg, clock);
   await drain(archiver);
@@ -164,6 +164,8 @@ describe('daily digest draft', () => {
     expect(markdown).toMatch(/\*\*частичный\*\*/);
     expect(markdown).not.toMatch(/Вчерашний разговор/);
     expect(meta.partial).toBe(true);
+    const personal = markdown.split('### ').find((s) => s.includes('Иван (синтетический)'));
+    expect(personal).toMatch(/важно: личный чат, есть твои сообщения/);
   });
 
   it('still produces an extractive draft without a model', async () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { clusterChunks, storyPrompt } from '../src/digest/digest.js';
+import { clusterChunks, storyPrompt, storyScore } from '../src/digest/digest.js';
 
 const at = (hh, mm = 0) => new Date(Date.UTC(2026, 9, 4, hh, mm));
 
@@ -71,5 +71,23 @@ describe('storyPrompt', () => {
     expect(prompt).not.toMatch(/шум/);
     expect(prompt.indexOf('утро')).toBeLessThan(prompt.indexOf('вечер'));
     expect(prompt).toMatch(/ещё 1 фрагм\. сюжета не показано/);
+  });
+});
+
+describe('storyScore', () => {
+  it('puts a short personal conversation with the owner above a busy channel', () => {
+    const channel = storyScore({ chats: 1, messages: 8 });
+    const personal = storyScore({ chats: 1, messages: 3, personal: true, own: true });
+    const mention = storyScore({ chats: 1, messages: 2, mentioned: true });
+    expect(personal).toBeGreaterThan(channel);
+    expect(mention).toBeGreaterThan(storyScore({ chats: 1, messages: 6 }));
+  });
+
+  it('exposes the signals on clustered stories', () => {
+    const c = chunk('601', [1, 0], ['привет']);
+    c.peerKind = 'user';
+    c.messages[0].own = true;
+    const [story] = clusterChunks([c]);
+    expect(story.signals).toEqual({ personal: true, own: true, mentioned: false });
   });
 });
