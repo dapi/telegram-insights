@@ -29,6 +29,7 @@ beforeAll(async () => {
     TI_DATABASE_URL: db.url,
     TI_DISABLE_EMBEDDINGS: '1',
     TELEGRAM_INSIGHTS_STORE: tmp,
+    TELEGRAM_INSIGHTS_CONFIG: path.join(tmp, 'none.json'),
   };
 });
 
@@ -57,9 +58,9 @@ describe('command line', () => {
     const { stdout } = await cli('search', 'релиз', 'мобильного', 'приложения', '--json');
     const found = JSON.parse(stdout);
     expect(found.mode).toBe('text');
-    const message = found.results[0].messages.find((m) => !m.context);
-    expect(message.link.ref).toMatch(/^tgi:-4001\//);
-    const shown = await cli('show', message.link.ref);
+    const message = found.results[0].messages.find((m) => !m.context_only);
+    expect(message.ref).toMatch(/^tgi:-4001\//);
+    const shown = await cli('show', message.ref);
     expect(shown.stdout).toMatch(/релиза мобильного приложения/);
   });
 
@@ -70,6 +71,26 @@ describe('command line', () => {
     expect(JSON.parse(first.stdout).written).toBe(out);
     expect(fs.statSync(out).mode & 0o777).toBe(0o600);
     await expect(cli('digest', '--date', day, '--no-llm', '--out', out)).rejects.toThrow(/already exists/);
+  });
+
+  it('the same read commands work through an MCP server', async () => {
+    const mcp = `node ${bin} mcp`;
+    const found = JSON.parse((await cli('--mcp-command', mcp, 'search', 'релиз', 'мобильного', '--json')).stdout);
+    const ref = found.results[0].messages.find((m) => !m.context_only).ref;
+    expect(ref).toMatch(/^tgi:-4001\//);
+    const ctx = await cli('--mcp-command', mcp, 'context', ref);
+    expect(ctx.stdout).toMatch(/релиза мобильного приложения/);
+    const chats = JSON.parse((await cli('--mcp-command', mcp, 'chats', 'Малая', '--json')).stdout);
+    expect(chats[0].chat_id).toBe('-4001');
+    const status = await cli('--mcp-command', mcp, 'status');
+    expect(status.stdout).toMatch(/окно покрыто для всех доступных чатов/);
+  });
+
+  it('config shows the resolved mode without secrets', async () => {
+    const { stdout } = await cli('config');
+    const s = JSON.parse(stdout);
+    expect(s.mode).toBe('direct');
+    expect(s.database).toMatch(/\*\*\*@/);
   });
 
   it('ask without a model lists sources', async () => {

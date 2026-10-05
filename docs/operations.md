@@ -100,3 +100,20 @@ com.dapi.telegram-insights.digest` и перевести реестр в `absent
 claude mcp add telegram-insights -s user -- ssh -o BatchMode=yes office3 \
   ~/code/telegram-insights/ops/office3/telegram-insights-with-pass mcp
 ```
+
+## CLI и skill без MCP
+
+`scripts/install-cli.sh [ssh-host]` ставит `~/.local/bin/telegram-insights`,
+создаёт `~/.config/telegram-insights/config.json` (`{"remote": "office3"}`), если
+его нет, и устанавливает skill `telegram-insights` (`skills/telegram-insights`).
+
+Команды чтения `search`, `context`, `chats`, `status` работают в двух режимах:
+
+- **mcp** — запускают MCP-сервер по SSH (`--remote`, `TI_REMOTE`, `remote`) или
+  любую команду (`--mcp-command`, `TI_MCP_COMMAND`, `mcpCommand`);
+- **direct** — PostgreSQL роли reader (`--db-url`, `TI_READER_DATABASE_URL`,
+  `--db-url-pass`/`databaseUrlPass` — запись `pass`) и Ollama для векторизации запроса.
+
+Приоритет: аргументы → env → конфиг пользователя (`TELEGRAM_INSIGHTS_CONFIG`
+меняет путь) → значения по умолчанию. Пароли в конфиг не пишутся.
+`telegram-insights config` показывает выбранный режим без секретов.

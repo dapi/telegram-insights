@@ -3,6 +3,8 @@ import path from 'node:path';
 import { Command } from 'commander';
 
 import { Archiver } from './archive/archiver.js';
+import { createBackend } from './client/backend.js';
+import { configPath, readConfigFile, resolveSettings } from './client/settings.js';
 import { coverageReport, STATE_LABELS } from './archive/status.js';
 import { createPool, migrate } from './db.js';
 import { buildDigest } from './digest/digest.js';
@@ -96,7 +98,25 @@ function printSummary(s) {
 
 export function buildProgram() {
   const program = new Command();
-  program.name('telegram-insights').description('Private Telegram archive in PostgreSQL with search and daily digests');
+  program.name('telegram-insights').description('Private Telegram archive in PostgreSQL with search and daily digests')
+    .option('--remote <ssh-host>', 'read through MCP over SSH on this host (env TI_REMOTE)')
+    .option('--remote-command <cmd>', 'remote command that serves MCP (env TI_REMOTE_COMMAND)')
+    .option('--mcp-command <cmd>', 'any local command that serves MCP on stdio (env TI_MCP_COMMAND)')
+    .option('--db-url <url>', 'reader PostgreSQL URL for direct mode (env TI_READER_DATABASE_URL)')
+    .option('--db-url-pass <entry>', 'pass entry with the reader PostgreSQL URL (env TI_READER_DATABASE_URL_PASS)')
+    .option('--ollama-url <url>', 'local Ollama for query embeddings in direct mode (env TI_OLLAMA_URL)')
+    .option('--direct', 'ignore remote/MCP settings and query PostgreSQL directly')
+    .option('--config <path>', 'user config file (env TELEGRAM_INSIGHTS_CONFIG)');
+
+  // Read commands go through the configured backend: local PostgreSQL or MCP.
+  const withBackend = async (fn) => {
+    const backend = createBackend(resolveSettings(program.opts()));
+    try {
+      return await fn(backend);
+    } finally {
+      await backend.close();
+    }
+  };
 
   program.command('migrate').description('Apply database migrations (owner role)').action(async () => {
     const config = loadConfig();
@@ -199,68 +219,106 @@ export function buildProgram() {
       }
     });
 
-  program.command('status').description('Coverage per chat and for the whole archive (metadata only)')
-    .option('--json', 'machine-readable output')
-    .option('--chats', 'list every chat')
-    .option('--redact', 'show chat ids instead of titles')
-    .option('--account <id>', 'account id when several are archived')
-    .option('--check', 'exit with code 2 if the service heartbeat is older than 10 minutes')
-    .action(async (opts) => {
-      const config = loadConfig();
-      const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 2 });
-      try {
-        const report = await coverageReport(pool, { accountId: opts.account, windowDays: config.archive.windowDays });
-        if (!report.summary) {
-          console.log('Архив пуст: служба ещё не запускалась.');
-          return;
-        }
-        if (opts.json) {
-          const chats = opts.chats ? report.chats.map((c) => (opts.redact ? { ...c, title: null, username: null } : c)) : undefined;
-          console.log(JSON.stringify({ summary: report.summary, chats }, null, 2));
-          return;
-        }
-        if (opts.check) {
-          const at = report.summary.heartbeat?.at ? new Date(report.summary.heartbeat.at) : null;
-          const stale = !at || Date.now() - at.getTime() > 10 * 60_000;
-          console.log(stale ? `UNHEALTHY: heartbeat ${at ? formatLocal(at) : 'missing'}` : `OK: heartbeat ${formatLocal(at)}`);
-          if (stale) process.exitCode = 2;
-          return;
-        }
-        printSummary(report.summary);
-        if (opts.chats) printChatTable(report.chats, { redact: opts.redact });
-      } finally {
-        await pool.end();
-      }
-    });
-
-  program.command('search').description('Hybrid search across all archived chats')
+  program.command('search').description('Search all archived chats by meaning and words')
     .argument('<query...>')
     .option('--limit <n>', 'number of fragments', '8')
     .option('--from <date>', 'from date (YYYY-MM-DD)')
     .option('--to <date>', 'to date (YYYY-MM-DD, exclusive)')
+    .option('--chat <id>', 'only this chat (id from `chats`)')
     .option('--json', 'machine-readable output')
-    .action(async (words, opts) => {
-      const config = loadConfig();
-      const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 2 });
-      try {
-        const service = new SearchService({ pool, embedder: embedderFor(config), windowDays: config.archive.windowDays });
-        const found = await service.search(words.join(' '), {
-          limit: Number(opts.limit), from: opts.from ? new Date(opts.from) : null, to: opts.to ? new Date(opts.to) : null,
-        });
-        if (opts.json) {
-          console.log(JSON.stringify(found, null, 2));
-          return;
+    .action((words, opts) => withBackend(async (b) => {
+      const r = await b.searchMessages({
+        query: words.join(' '), limit: Number(opts.limit), from: opts.from, to: opts.to, chat_id: opts.chat,
+      });
+      if (opts.json) return console.log(JSON.stringify(r, null, 2));
+      for (const [i, x] of r.results.entries()) {
+        console.log(`\n[${i + 1}] «${x.chat ?? x.chat_id}» (${x.chat_kind}, chat ${x.chat_id}) ${x.period} [${x.matched_by.join('+')}]`);
+        for (const m of x.messages) {
+          console.log(`  ${m.context_only ? '·' : '-'} ${m.at} ${m.sender ?? ''}: ${(m.text ?? '').replace(/\s+/g, ' ').slice(0, 400)}  ${m.url ?? m.ref}`);
         }
-        for (const [i, r] of found.results.entries()) {
-          console.log(`\n[${i + 1}] «${r.chatTitle ?? r.chatId}» ${formatLocal(r.firstSentAt)} (${r.matchedBy.join('+')})`);
-          for (const m of r.messages) {
-            console.log(`  ${m.context ? '·' : '-'} ${formatLocal(m.sentAt)} ${m.sender ?? ''}: ${(m.text ?? '').replace(/\s+/g, ' ').slice(0, 300)}  ${m.link.url ?? m.link.ref}`);
-          }
-        }
-        console.log(`\nРежим: ${found.mode}. ${found.coverageNote}\n${EDITS_LIMITATION}`);
-      } finally {
-        await pool.end();
       }
+      if (!r.results.length) console.log('Ничего не найдено.');
+      console.log(`\nРежим: ${r.mode}. ${r.coverage}\n${r.note}`);
+    }));
+
+  program.command('context').alias('show').description('Read a message and its neighbours by ref tgi:<chat_id>/<message_id>')
+    .argument('<ref>')
+    .option('--before <n>', 'messages before', '5')
+    .option('--after <n>', 'messages after', '5')
+    .option('--json', 'machine-readable output')
+    .action((ref, opts) => withBackend(async (b) => {
+      const r = await b.messageContext({ ref, before: Number(opts.before), after: Number(opts.after) });
+      if (opts.json) return console.log(JSON.stringify(r, null, 2));
+      console.log(`«${r.chat ?? r.chat_id}» (${r.chat_kind})`);
+      for (const m of r.messages) console.log(`${m.target ? '>' : ' '} ${m.at} ${m.sender ?? ''}: ${m.text}  ${m.url ?? m.ref}`);
+      console.log(`\n${r.note}`);
+    }));
+
+  program.command('chats').description('Find archived chats by title or username')
+    .argument('<query...>')
+    .option('--limit <n>', 'number of chats', '20')
+    .option('--json', 'machine-readable output')
+    .action((words, opts) => withBackend(async (b) => {
+      const r = await b.findChats({ query: words.join(' '), limit: Number(opts.limit) });
+      if (opts.json) return console.log(JSON.stringify(r, null, 2));
+      for (const c of r) console.log(`${c.chat_id.padStart(16)}  ${(c.kind ?? '').padEnd(10)} ${(c.state ?? '').padEnd(12)} ${c.newest ?? '—'}  ${c.title ?? ''}${c.username ? ` @${c.username}` : ''}`);
+      if (!r.length) console.log('Чаты не найдены.');
+    }));
+
+  program.command('status').description('Coverage of the archive (metadata only)')
+    .option('--json', 'machine-readable output')
+    .option('--chats', 'list every chat (direct mode only)')
+    .option('--redact', 'with --chats: show chat ids instead of titles')
+    .option('--check', 'exit with code 2 if the service heartbeat is older than 10 minutes')
+    .action((opts) => withBackend(async (b) => {
+      const { summary } = await b.archiveStatus();
+      if (!summary) return console.log('Архив пуст: служба ещё не запускалась.');
+      if (opts.check) {
+        const at = summary.heartbeat?.at ? new Date(summary.heartbeat.at) : null;
+        const stale = !at || Date.now() - at.getTime() > 10 * 60_000;
+        console.log(stale ? `UNHEALTHY: heartbeat ${at ? formatLocal(at) : 'missing'}` : `OK: heartbeat ${formatLocal(at)}`);
+        if (stale) process.exitCode = 2;
+        return undefined;
+      }
+      let chats;
+      if (opts.chats) {
+        if (!b.pool) throw new Error('--chats needs direct mode (--direct with a reader database URL)');
+        chats = (await coverageReport(b.pool, { windowDays: summary.windowDays })).chats;
+      }
+      if (opts.json) {
+        return console.log(JSON.stringify({ summary, chats: chats?.map((c) => (opts.redact ? { ...c, title: null, username: null } : c)) }, null, 2));
+      }
+      printSummary(summary);
+      if (chats) printChatTable(chats, { redact: opts.redact });
+      return undefined;
+    }));
+
+  program.command('config').description('Show the resolved connection settings (no secrets) or create the user config')
+    .option('--init', 'write the user config file from the given global options')
+    .action((opts) => {
+      const global = program.opts();
+      const file = global.config ?? configPath();
+      if (opts.init) {
+        const current = readConfigFile(file);
+        const next = { ...current };
+        if (global.remote) next.remote = global.remote;
+        if (global.remoteCommand) next.remoteCommand = global.remoteCommand;
+        if (global.mcpCommand) next.mcpCommand = global.mcpCommand;
+        if (global.dbUrlPass) next.databaseUrlPass = global.dbUrlPass;
+        if (global.ollamaUrl) next.ollamaUrl = global.ollamaUrl;
+        if (global.dbUrl) throw new Error('Do not store database URLs with passwords in the config; use --db-url-pass <pass entry>');
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+        console.log(`Written ${file}`);
+      }
+      const s = resolveSettings(global, process.env, { readPass: () => '(from pass)' });
+      console.log(JSON.stringify({
+        configFile: s.configFile,
+        mode: s.mode,
+        command: s.mode === 'mcp' ? s.command.join(' ') : undefined,
+        database: s.mode === 'direct' ? (s.databaseUrl ? s.databaseUrl.replace(/\/\/([^:@]+):[^@]*@/, '//$1:***@') : 'not configured') : undefined,
+        ollamaUrl: s.mode === 'direct' ? s.ollamaUrl : undefined,
+      }, null, 2));
     });
 
   program.command('ask').description('Answer a question from several chats with sources (local model)')
@@ -305,38 +363,6 @@ export function buildProgram() {
         fs.mkdirSync(path.dirname(out), { recursive: true, mode: 0o700 });
         fs.writeFileSync(out, markdown, { mode: 0o600 });
         console.log(JSON.stringify({ written: out, ...meta }));
-      } finally {
-        await pool.end();
-      }
-    });
-
-  program.command('show').description('Open an archived message by reference tgi:<chat_id>/<message_id>')
-    .argument('<ref>')
-    .option('--context <n>', 'messages before and after', '3')
-    .action(async (ref, opts) => {
-      const config = loadConfig();
-      const { chatId, messageId } = parseArchiveRef(ref);
-      const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 1 });
-      try {
-        const { rows: [chat] } = await pool.query('SELECT * FROM archive.chats WHERE chat_id = $1 LIMIT 1', [chatId]);
-        if (!chat) throw new Error('Chat is not in the archive');
-        const { rows: [target] } = await pool.query('SELECT * FROM archive.messages WHERE chat_id = $1 AND message_id = $2', [chatId, messageId]);
-        if (!target) throw new Error('Message is not in the archive');
-        const n = Number(opts.context);
-        const { rows } = await pool.query(
-          `(SELECT * FROM archive.messages WHERE chat_id = $1 AND (sent_at, message_id) < ($2, $3) ORDER BY sent_at DESC, message_id DESC LIMIT $4)
-           UNION ALL (SELECT * FROM archive.messages WHERE chat_id = $1 AND message_id = $3)
-           UNION ALL (SELECT * FROM archive.messages WHERE chat_id = $1 AND (sent_at, message_id) > ($2, $3) ORDER BY sent_at, message_id LIMIT $4)
-           ORDER BY sent_at, message_id`,
-          [chatId, target.sent_at, messageId, n],
-        );
-        console.log(`«${chat.title ?? chatId}» (${chat.peer_kind})`);
-        for (const m of rows) {
-          const link = messageLink({ chatId, messageId: Number(m.message_id), topicId: m.topic_id, peerKind: chat.peer_kind, username: chat.username });
-          const mark = Number(m.message_id) === messageId ? '>' : ' ';
-          console.log(`${mark} ${formatLocal(m.sent_at)} ${m.sender_name ?? ''}: ${m.text || (m.media_type ? `[${m.media_type}]` : '')}  ${markdownLink('ссылка', link)}`);
-        }
-        console.log(`\nАрхивировано ${formatLocal(target.archived_at)} (${target.source}). ${EDITS_LIMITATION}`);
       } finally {
         await pool.end();
       }
