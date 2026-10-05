@@ -5,7 +5,7 @@ import { Indexer, buildChunks } from '../src/index/indexer.js';
 import { assertLocalRoute } from '../src/llm/ollama.js';
 import { messageLink } from '../src/links.js';
 import { answerQuestion } from '../src/search/ask.js';
-import { SearchService } from '../src/search/search.js';
+import { SearchService, queryTerms } from '../src/search/search.js';
 import { dayRange } from '../src/time.js';
 import { createTestDatabase } from './helpers/db.js';
 import { FakeTelegram } from './helpers/fake-telegram.js';
@@ -131,12 +131,36 @@ describe('cross-chat search and answers', () => {
     expect(found.results[0].chatId).toBe('-1001000000012');
   });
 
-  it('ranks a chunk with rare query words above chunks that repeat common ones', async () => {
-    const textOnly = new SearchService({ pool, embedder: null });
-    const found = await textOnly.search('мерч футболки бюджет питание', { limit: 3 });
-    expect(found.mode).toBe('text');
-    expect(found.results[0].chatId).toBe('-1001000000012');
-    expect(found.results[0].messages.some((m) => m.text.includes('футболки') && !m.context)).toBe(true);
+  it('ranks a chunk with a rare query word above chunks that repeat common ones', async () => {
+    // A separate synthetic account so the shared fixture stays untouched.
+    const account = '990001';
+    const chunk = (chatId, body) => pool.query(
+      `INSERT INTO search.chunks (account_id, chat_id, bucket_start, part, message_ids, first_sent_at, last_sent_at, body, body_hash)
+       VALUES ($1, $2, '2026-10-04T10:00:00Z', 0, '{1}', '2026-10-04T10:00:00Z', '2026-10-04T10:00:00Z', $3, md5($3))`,
+      [account, chatId, body],
+    );
+    for (let i = 0; i < 6; i += 1) {
+      await chunk(`70${i}`, `Подписка на агентов: агентами пользуемся, подписка с агентами, лимит подписки ${i}.`);
+    }
+    await chunk('799', 'Длинное обсуждение докладов и поездки в Казань, время выезда и темы. Второй доклад будет про солопренерство.');
+    const service = new SearchService({ pool, embedder: null });
+    const rows = await service.textCandidates(account, 'солопренерство с агентами подписка', { limit: 3 });
+    expect(String(rows[0].chat_id)).toBe('799');
+    await pool.query('DELETE FROM search.chunks WHERE account_id = $1', [account]);
+  });
+
+  it('keeps dotted and hyphenated query tokens whole', async () => {
+    expect(queryTerms('z.ai подписка, GPT-6 и prompt-audit — ок')).toEqual(['z.ai', 'подписка', 'gpt-6', 'prompt-audit']);
+    const account = '990002';
+    await pool.query(
+      `INSERT INTO search.chunks (account_id, chat_id, bucket_start, part, message_ids, first_sent_at, last_sent_at, body, body_hash)
+       VALUES ($1, 801, '2026-10-04T10:00:00Z', 0, '{1}', '2026-10-04T10:00:00Z', '2026-10-04T10:00:00Z', $2, md5($2))`,
+      [account, 'Купил подписку z.ai и за два часа сжёг лимит; по ощущениям как GPT-6.'],
+    );
+    const service = new SearchService({ pool, embedder: null });
+    const rows = await service.textCandidates(account, 'z.ai gpt-6', { limit: 3 });
+    expect(rows.map((r) => String(r.chat_id))).toEqual(['801']);
+    await pool.query('DELETE FROM search.chunks WHERE account_id = $1', [account]);
   });
 
   it('answers with source references, coverage and the edits limitation', async () => {

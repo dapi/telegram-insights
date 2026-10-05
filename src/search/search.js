@@ -3,12 +3,13 @@ import { messageLink } from '../links.js';
 
 const RRF_K = 60;
 
-// Words of a natural-language query for full-text matching (3+ letters/digits).
+// Words of a natural-language query for full-text matching. Dotted and hyphenated
+// tokens stay whole ("z.ai", "gpt-6", "prompt-audit"); shorter than 3 chars are noise.
 export function queryTerms(text) {
   const words = String(text)
     .toLowerCase()
-    .match(/[\p{L}\p{N}]{3,}/gu) ?? [];
-  return [...new Set(words)].slice(0, 24);
+    .match(/[\p{L}\p{N}]+(?:[.\-_][\p{L}\p{N}]+)*/gu) ?? [];
+  return [...new Set(words.filter((w) => w.length >= 3))].slice(0, 24);
 }
 
 // Natural-language questions rarely match with AND semantics, so the text side
