@@ -104,7 +104,10 @@ export function classifyTelegramError(error) {
   }
   const name = typeof error?.name === 'string' && error.name !== 'Error' ? error.name : null;
   const code = (/([A-Z][A-Z0-9_]{3,})/.exec(text)?.[1]) ?? name ?? 'UNKNOWN';
-  return new TelegramError(code, code);
+  const result = new TelegramError(code, code);
+  // Technical hint without identifiers; never contains message text.
+  result.hint = text.replace(/\d+/g, '#').slice(0, 120);
+  return result;
 }
 
 export class MtcuteGateway {

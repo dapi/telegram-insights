@@ -144,7 +144,7 @@ export class Archiver {
     this.stats.errors += 1;
     if (task) {
       const { unavailable } = await this.store.markError(this.accountId, task.chat_id, error.code ?? 'UNKNOWN');
-      await this.store.logEvent(this.accountId, unavailable ? 'chat_unavailable' : 'chat_error', { code: error.code ?? 'UNKNOWN' }, task.chat_id);
+      await this.store.logEvent(this.accountId, unavailable ? 'chat_unavailable' : 'chat_error', { code: error.code ?? 'UNKNOWN', hint: error.hint ?? String(error.message ?? '').replace(/\d+/g, '#').slice(0, 120) }, task.chat_id);
     } else {
       await this.store.logEvent(this.accountId, 'error', { code: error.code ?? 'UNKNOWN' });
     }
