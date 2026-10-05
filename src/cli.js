@@ -237,10 +237,12 @@ export function buildProgram() {
     .option('--from <date>', 'from date (YYYY-MM-DD)')
     .option('--to <date>', 'to date (YYYY-MM-DD, exclusive)')
     .option('--chat <id>', 'only this chat (id from `chats`)')
+    .option('--recent', 'prefer recent messages (questions about lately without dates)')
     .option('--json', 'machine-readable output')
     .action((words, opts) => withBackend(async (b) => {
       const r = await b.searchMessages({
         query: words.join(' '), limit: Number(opts.limit), from: opts.from, to: opts.to, chat_id: opts.chat,
+        ...(opts.recent ? { recent: true } : {}),
       });
       if (opts.json) return console.log(JSON.stringify(r, null, 2));
       for (const [i, x] of r.results.entries()) {

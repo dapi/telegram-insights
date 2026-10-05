@@ -2,6 +2,20 @@ import { coverageNote, coverageReport, resolveAccountId } from '../archive/statu
 import { messageLink } from '../links.js';
 
 const RRF_K = 60;
+const DAY_MS = 86_400_000;
+
+// Opt-in preference for recent messages (`recent`), for questions about
+// "lately" without explicit dates. The fused score is multiplied by
+// 1 + weight * decay, where decay halves every halfLifeDays. It is not on by
+// default: RRF scores are flat, so any boost also pushes old exact matches down
+// (evaluation 2026-10-05: old-message MRR 0.79 -> 0.53 with the boost always on).
+export const RECENCY_DEFAULTS = { weight: 1, halfLifeDays: 30 };
+
+export function recencyFactor(at, now, { weight, halfLifeDays }) {
+  if (!weight) return 1;
+  const ageDays = Math.max(0, (now - new Date(at).getTime()) / DAY_MS);
+  return 1 + weight * 0.5 ** (ageDays / halfLifeDays);
+}
 
 // Words of a natural-language query for full-text matching. Dotted and hyphenated
 // tokens stay whole ("z.ai", "gpt-6", "prompt-audit"); shorter than 3 chars are noise.
@@ -19,8 +33,10 @@ export function orQuery(text) {
 }
 
 export class SearchService {
-  constructor({ pool, embedder = null, windowDays = 14, timeZone = 'Europe/Moscow' }) {
+  constructor({ pool, embedder = null, windowDays = 14, timeZone = 'Europe/Moscow', recency = RECENCY_DEFAULTS, now = () => Date.now() }) {
     this.pool = pool;
+    this.recency = recency;
+    this.now = now;
     this.embedder = embedder;
     this.windowDays = windowDays;
     this.timeZone = timeZone;
@@ -81,7 +97,7 @@ export class SearchService {
     return { rows, used: true, error: null };
   }
 
-  async search(query, { accountId = null, limit = 8, from = null, to = null, candidates = 50, chatId = null } = {}) {
+  async search(query, { accountId = null, limit = 8, from = null, to = null, candidates = 50, chatId = null, recent = false } = {}) {
     const account = await resolveAccountId(this.pool, accountId);
     if (!account) throw new Error('Archive is empty: no account has been archived yet');
     const [text, vector] = await Promise.all([
@@ -99,6 +115,10 @@ export class SearchService {
       const prev = fused.get(k);
       fused.set(k, { row: r, score: (prev?.score ?? 0) + 1 / (RRF_K + i + 1), text: prev?.text ?? false, vector: true, distance: Number(r.distance) });
     });
+    if (recent && !from && !to) {
+      const now = this.now();
+      for (const hit of fused.values()) hit.score *= recencyFactor(hit.row.bucket_start, now, this.recency);
+    }
     const top = [...fused.values()].sort((a, b) => b.score - a.score).slice(0, limit);
     const results = [];
     for (const hit of top) results.push(await this.loadHit(account, hit));

@@ -163,6 +163,48 @@ describe('cross-chat search and answers', () => {
     await pool.query('DELETE FROM search.chunks WHERE account_id = $1', [account]);
   });
 
+  it('prefers recent messages only when asked to', async () => {
+    const account = '990003';
+    await pool.query('INSERT INTO archive.accounts (account_id) VALUES ($1)', [account]);
+    const chunk = async (chatId, at, body) => {
+      await pool.query("INSERT INTO archive.chats (account_id, chat_id, peer_kind, title) VALUES ($1, $2, 'user', $3)", [account, chatId, `Чат ${chatId}`]);
+      await pool.query(
+        `INSERT INTO search.chunks (account_id, chat_id, bucket_start, part, message_ids, first_sent_at, last_sent_at, body, body_hash)
+         VALUES ($1, $2, $3, 0, '{1}', $3, $3, $4, md5($4))`,
+        [account, chatId, at, body],
+      );
+    };
+    try {
+      await chunk('901', '2024-10-04T10:00:00Z', 'Поздравляем с днём рождения, счастья и здоровья!');
+      await chunk('902', '2026-10-04T10:00:00Z', 'С днём рождения!');
+      const service = new SearchService({ pool, embedder: null, now: () => Date.parse('2026-10-05T10:00:00Z') });
+      const order = async (opts) => (await service.search('поздравляем с днём рождения счастья', { accountId: account, limit: 2, ...opts }))
+        .results.map((r) => String(r.chatId));
+      expect(await order({})).toEqual(['901', '902']);
+      expect(await order({ recent: true })).toEqual(['902', '901']);
+      expect(await order({ recent: true, from: new Date('2020-01-01') })).toEqual(['901', '902']);
+    } finally {
+      await pool.query('DELETE FROM search.chunks WHERE account_id = $1', [account]);
+      await pool.query('DELETE FROM archive.chats WHERE account_id = $1', [account]);
+      await pool.query('DELETE FROM archive.accounts WHERE account_id = $1', [account]);
+    }
+  });
+
+  it('gives half of the answer sources to the last 30 days when no dates are set', async () => {
+    const hit = (chatId, at) => ({ chatId, chatTitle: chatId, firstSentAt: new Date(at), lastSentAt: new Date(at), messages: [] });
+    const calls = [];
+    const search = {
+      async search(question, { limit, from }) {
+        calls.push({ limit, from });
+        const results = from ? [hit('new', '2026-10-04')] : [hit('old1', '2024-10-04'), hit('old2', '2023-10-04'), hit('new', '2026-10-04')];
+        return { results: results.slice(0, limit), coverageNote: 'покрытие', mode: 'text' };
+      },
+    };
+    const { found } = await answerQuestion({ search, llm: null, question: 'кто поздравил?', limit: 2, now: Date.parse('2026-10-05T10:00:00Z') });
+    expect(found.results.map((r) => r.chatId)).toEqual(['new', 'old1']);
+    expect(calls.find((c) => c.from).from.toISOString()).toBe('2026-09-05T10:00:00.000Z');
+  });
+
   it('answers with source references, coverage and the edits limitation', async () => {
     const service = new SearchService({ pool, embedder });
     const { text } = await answerQuestion({ search: service, llm: new FakeChat(), question: 'Какой бюджет конференции?' });

@@ -13,8 +13,8 @@ function parseDate(value) {
   return d;
 }
 
-export async function searchMessages(search, { query, limit = 8, from = null, to = null, chat_id: chatId = null }) {
-  const found = await search.search(query, { limit, from: parseDate(from), to: parseDate(to), chatId });
+export async function searchMessages(search, { query, limit = 8, from = null, to = null, chat_id: chatId = null, recent = false }) {
+  const found = await search.search(query, { limit, from: parseDate(from), to: parseDate(to), chatId, recent: Boolean(recent) });
   return {
     mode: found.mode,
     results: found.results.map((r) => ({

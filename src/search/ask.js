@@ -7,6 +7,7 @@ const SYSTEM = `Ты помощник, который отвечает на во
 - Используй только приведённые источники. Не добавляй факты от себя.
 - После каждого утверждения ставь ссылку на источник в квадратных скобках, например [S2].
 - Если источники противоречат друг другу, прямо укажи противоречие и оба источника.
+- Источники бывают за разные годы. Если событие повторялось (день рождения, встреча, релиз), отвечай о самом свежем случае и называй даты; более старые упоминай отдельно и только если это важно.
 - Если в источниках нет ответа, так и скажи: «В архиве нет достаточных данных».
 - Пиши по-русски, кратко.`;
 
@@ -29,8 +30,30 @@ export function renderSources(results) {
   }).join('\n');
 }
 
-export async function answerQuestion({ search, llm, question, limit = 8, from = null, to = null }) {
-  const found = await search.search(question, { limit, from, to });
+const RECENT_DAYS = 30;
+
+// Without explicit dates the answer must see recent sources even when older
+// history matches better: half of the slots go to the last RECENT_DAYS days.
+async function findSources(search, question, { limit, from, to, now }) {
+  if (from || to) return search.search(question, { limit, from, to });
+  const since = new Date(now - RECENT_DAYS * 86_400_000);
+  const [all, recent] = await Promise.all([
+    search.search(question, { limit }),
+    search.search(question, { limit: Math.ceil(limit / 2), from: since }),
+  ]);
+  const key = (r) => `${r.chatId}|${new Date(r.firstSentAt).toISOString()}`;
+  const seen = new Set();
+  const results = [];
+  for (const r of [...recent.results, ...all.results]) {
+    if (results.length >= limit || seen.has(key(r))) continue;
+    seen.add(key(r));
+    results.push(r);
+  }
+  return { ...all, results };
+}
+
+export async function answerQuestion({ search, llm, question, limit = 8, from = null, to = null, now = Date.now() }) {
+  const found = await findSources(search, question, { limit, from, to, now });
   const footer = [
     '',
     '## Источники',

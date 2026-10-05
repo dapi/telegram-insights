@@ -19,6 +19,7 @@ export function buildMcpServer({ pool, search, windowDays = 14 }) {
       from: z.string().optional().describe('Only messages on/after this date (YYYY-MM-DD or ISO)'),
       to: z.string().optional().describe('Only messages before this date (exclusive)'),
       chat_id: z.string().optional().describe('Restrict to one chat (id from find_chats)'),
+      recent: z.boolean().optional().describe('Prefer recent messages; set when the question is about lately/now and gives no dates'),
     },
     async (args) => json(await searchMessages(search, args)),
   );

@@ -7,6 +7,7 @@
 // (default ~/.local/share/telegram-insights/eval/queries.tsv, mode 0600).
 // Direct mode: needs TI_READER_DATABASE_URL and the embedding route settings.
 // Usage: node scripts/eval-search.mjs [queries.tsv] [--limit 10] [--verbose]
+//   [--recent] [--recency-weight 1] [--half-life 30]   (opt-in recency preference)
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -14,12 +15,12 @@ import { join } from 'node:path';
 import { resolveSettings } from '../src/client/settings.js';
 import { createPool } from '../src/db.js';
 import { createEmbedder } from '../src/llm/models.js';
-import { SearchService } from '../src/search/search.js';
+import { RECENCY_DEFAULTS, SearchService } from '../src/search/search.js';
 
 const args = process.argv.slice(2);
 const flag = (name) => args.includes(name);
 const value = (name, fallback) => (args.includes(name) ? args[args.indexOf(name) + 1] : fallback);
-const file = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--limit')
+const file = args.find((a, i) => !a.startsWith('--') && !['--limit', '--recency-weight', '--half-life'].includes(args[i - 1]))
   ?? join(homedir(), '.local/share/telegram-insights/eval/queries.tsv');
 const limit = Number(value('--limit', 10));
 
@@ -31,13 +32,17 @@ const cases = readFileSync(file, 'utf8').split('\n').filter((l) => l.trim() && !
 const url = process.env.TI_READER_DATABASE_URL;
 if (!url) throw new Error('TI_READER_DATABASE_URL is required');
 const pool = createPool(url, { max: 1, applicationName: 'telegram-insights-eval' });
-const search = new SearchService({ pool, embedder: createEmbedder(resolveSettings({ direct: true }).models) });
+const recency = {
+  weight: Number(value('--recency-weight', RECENCY_DEFAULTS.weight)),
+  halfLifeDays: Number(value('--half-life', RECENCY_DEFAULTS.halfLifeDays)),
+};
+const search = new SearchService({ pool, embedder: createEmbedder(resolveSettings({ direct: true }).models), recency });
 
 const results = [];
 try {
   for (const c of cases) {
     const started = Date.now();
-    const found = await search.search(c.query, { limit });
+    const found = await search.search(c.query, { limit, recent: flag('--recent') });
     const index = found.results.findIndex((hit) => String(hit.chatId) === c.chatId
       && hit.messages.some((m) => String(m.messageId) === c.messageId && !m.context));
     results.push({ ...c, rank: index < 0 ? null : index + 1, ms: Date.now() - started });

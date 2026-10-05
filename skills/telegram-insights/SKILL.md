@@ -31,6 +31,9 @@ telegram-insights context tgi:<chat_id>/<message_id> --before 10 --after 10
 
 - `search` is hybrid: semantic (vectors) + full text. Phrase queries naturally;
   add distinctive words for names, numbers, links.
+- The archive holds years of history. For questions about "lately" without
+  dates add `--recent` (MCP: `recent: true`); with known dates use `--from/--to`.
+  Do not use `--recent` when looking for an old message.
 - Every message has a `ref` (`tgi:<chat_id>/<message_id>`) and, for channels and
   supergroups, a `url`. Cite them in answers; open `context` before quoting a
   message out of a short fragment.
