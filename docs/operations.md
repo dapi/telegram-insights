@@ -86,3 +86,17 @@ com.dapi.telegram-insights.digest` и перевести реестр в `absent
   «Peer is not found in local cache» в личных чатах ушли при повторе.
 - Поиск и черновик сводки на реальном архиве отработали; содержимое не
   просматривалось.
+
+## MCP
+
+`telegram-insights mcp` — read-only MCP (stdio, роль `reader`): `search_messages`
+(гибридный поиск pgvector + полнотекстовый, фильтры по чату и датам),
+`get_message_context`, `find_chats`, `archive_status`. Запросы
+векторизуются локальной моделью на office3.
+
+Подключение с MacBook (Claude Code, уровень user):
+
+```sh
+claude mcp add telegram-insights -s user -- ssh -o BatchMode=yes office3 \
+  ~/code/telegram-insights/ops/office3/telegram-insights-with-pass mcp
+```
