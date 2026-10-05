@@ -1,55 +1,58 @@
 # Эксплуатация
 
-## Где работает
+Конкретное развёртывание (хост, адреса, решения об авторизации и журнал
+проверок) описано в runbook `telegram-insights` инфраструктурного
+репозитория, состояние фоновых заданий — в реестре launchd Personal OS. Здесь —
+только то, что не зависит от хоста.
+
+## Состав службы
 
 | Что | Где |
 | --- | --- |
-| Служба `telegram-insights run` | LaunchAgent `com.dapi.telegram-insights` на `office3`; реестр — `~/code/personal-ops/launchd/registry.json` |
-| Архив и индекс | БД `telegram_insights` на общем PostgreSQL `office` (192.168.88.10); runbook — `~/code/brandymint/infra/docs/runbooks/telegram-insights.md` |
-| Сессия Telegram | `~/Library/Application Support/telegram-insights/session.db` на office3 — копия авторизации tgcli (решение Данила 2026-10-05), отдельный файл и состояние обновлений |
-| Модели | private LLM router (LiteLLM): `telegram-insights-embedding` (OpenRouter `text-embedding-3-small`, 1024) и `telegram-insights-chat` (Claude subscription); согласие Данила 2026-10-05. Запасной локальный вариант — `TI_MODEL_PROVIDER=ollama` |
-| Черновики сводок | `~/Library/Application Support/telegram-insights/digests/`, права 0600 |
-| Логи службы | `~/code/telegram-insights/log/` (в Git не попадают; только счётчики и коды ошибок) |
+| Архиватор и индексатор | `telegram-insights run`, LaunchAgent `com.dapi.telegram-insights` |
+| Черновик сводки | `telegram-insights digest --skip-existing`, LaunchAgent `com.dapi.telegram-insights.digest` (07:30) |
+| Архив и индекс | PostgreSQL с pgvector, БД `telegram_insights`, роли `owner`/`archiver`/`indexer`/`reader` |
+| Сессия и черновики | `TELEGRAM_INSIGHTS_STORE` (по умолчанию `~/Library/Application Support/telegram-insights`), права 0700/0600 |
+| Логи службы | `log/` в checkout (в Git не попадают; только счётчики и коды ошибок) |
 
-Секреты читает `ops/office3/telegram-insights-with-pass` в момент запуска:
-пароли БД — из `pass` (`telegram-insights/postgres/{owner,archiver,indexer,reader}-password`),
-API app — из конфигурации tgcli, потому что сессия является копией его
-авторизации.
+## Запуск на хосте службы
 
-Авторизация: `scripts/office3-copy-tgcli-session.sh` делает согласованную
-копию `session.json` tgcli (`sqlite3 .backup`). Отдельного входа и кода не
-требуется. Оба клиента используют один ключ авторизации с одного IP; если в
-логах любой из служб появится `AUTH_KEY_DUPLICATED` или `AUTH_KEY_UNREGISTERED`,
-остановить Telegram Insights и сообщить Данилу. Альтернатива — отдельная сессия:
-`login --qr-file` и подтверждение `scripts/approve-login-with-session.js` из
-копии сессии tgcli; аккаунт с облачным паролем тогда потребует
-`--password-pass <entry>`.
-Telegram доступен через SOCKS `office` (как у tgcli).
-
-## Команды на office3
+`ops/telegram-insights-with-pass` читает пароли ролей из `pass`
+(`telegram-insights/postgres/{owner,archiver,indexer,reader}-password`) в
+момент запуска, а несекретные настройки хоста — из файла вне репозитория
+`~/.config/telegram-insights/service.env` (путь меняет
+`TELEGRAM_INSIGHTS_SERVICE_ENV`):
 
 ```sh
-cd ~/code/telegram-insights
-ops/office3/telegram-insights-with-pass migrate
-scripts/office3-copy-tgcli-session.sh                     # один раз, авторизация tgcli
-scripts/install-office3-launchagent.sh
-ops/office3/telegram-insights-with-pass status            # сводка покрытия
-ops/office3/telegram-insights-with-pass status --chats    # по каждому чату
-ops/office3/telegram-insights-with-pass doctor
-ops/office3/telegram-insights-with-pass search "запрос"
-ops/office3/telegram-insights-with-pass ask "вопрос"
-ops/office3/telegram-insights-with-pass digest --date 2026-10-04
-~/code/personal-ops/scripts/personalctl launchd status
+TI_PG_HOST=<postgres host>                # обязательно
+TELEGRAM_PROXY=socks5://<host>:<port>     # если Telegram доступен только через прокси
+LLM_ROUTER_BASE_URL=http://<router>/v1    # embeddings и ответы
 ```
 
-Ежедневный черновик (временно, только на период тестирования — решение Данила
-2026-10-05; после тестирования выключить `scripts/uninstall-office3-launchagent.sh
-com.dapi.telegram-insights.digest` и перевести реестр в `absent`): LaunchAgent
-`com.dapi.telegram-insights.digest` в 07:30
-МСК пишет сводку за прошлые сутки в каталог черновиков (`digest --skip-existing`;
-готовый черновик не перезаписывается). Отправка никуда не выполняется.
-Установка: `scripts/install-office3-launchagent.sh com.dapi.telegram-insights.digest`.
-Проверка службы: `status --check` (код 2, если сигнал старше 10 минут).
+API app для `run`/`login` берётся из конфигурации tgcli, если сессия является
+копией его авторизации (`scripts/copy-tgcli-session.sh`, согласованная копия
+через `sqlite3 .backup`). Оба клиента тогда используют один ключ авторизации;
+при `AUTH_KEY_DUPLICATED` или `AUTH_KEY_UNREGISTERED` в логах любой из служб
+остановить Telegram Insights. Альтернатива — отдельная сессия: `login
+--qr-file` и подтверждение `scripts/approve-login-with-session.js`; аккаунт с
+облачным паролем потребует `--password-pass <entry>`.
+
+```sh
+ops/telegram-insights-with-pass migrate
+scripts/copy-tgcli-session.sh                       # один раз
+scripts/install-launchagent.sh                      # архиватор
+scripts/install-launchagent.sh com.dapi.telegram-insights.digest
+ops/telegram-insights-with-pass status              # сводка покрытия
+ops/telegram-insights-with-pass status --chats      # по каждому чату
+ops/telegram-insights-with-pass status --check      # код 2, если сигнал старше 10 минут
+ops/telegram-insights-with-pass doctor
+ops/telegram-insights-with-pass digest --date 2026-10-04
+```
+
+Шаблоны `ops/launchd/*.plist.in` содержат `@REPO@`; установщик подставляет
+путь текущего checkout. Черновик сводки никуда не отправляется и готовый файл
+не перезаписывает. Включение расписаний — решение владельца эксплуатации, а не
+побочный эффект разработки.
 
 ## Поведение и настройки
 
@@ -77,45 +80,34 @@ com.dapi.telegram-insights.digest` и перевести реестр в `absent
 
 ## Откат
 
-`scripts/uninstall-office3-launchagent.sh` останавливает службу; сессия,
+`scripts/uninstall-launchagent.sh [label]` останавливает службу; сессия,
 архив и логи сохраняются. Действующий tgcli от службы не зависит.
-
-## Проверка запуска 2026-10-05 (только метаданные)
-
-- 15:13 МСК: 2157 чатов; окно 14 суток покрыто для 2156 из 2156 доступных;
-  1 личный чат недоступен (`PEER_ID_INVALID`). 71 906 сообщений в архиве,
-  индекс без отставания. FLOOD_WAIT не было; интервал 1,5 с.
-- Восстановление после `kill -9`: launchd перезапустил службу, загрузка
-  продолжилась с checkpoint.
-- Найдено и исправлено при запуске: дубль чата в списке диалогов (SQLSTATE
-  21000) и зависший запрос истории (добавлен таймаут 90 с). Ошибки
-  «Peer is not found in local cache» в личных чатах ушли при повторе.
-- Поиск и черновик сводки на реальном архиве отработали; содержимое не
-  просматривалось.
 
 ## MCP
 
 `telegram-insights mcp` — read-only MCP (stdio, роль `reader`): `search_messages`
 (гибридный поиск pgvector + полнотекстовый, фильтры по чату и датам),
 `get_message_context`, `find_chats`, `archive_status`. Запросы
-векторизуются локальной моделью на office3.
+векторизуются той же моделью, что и индекс.
 
-Подключение с MacBook (Claude Code, уровень user):
+Подключение с другого компьютера (Claude Code, уровень user):
 
 ```sh
-claude mcp add telegram-insights -s user -- ssh -o BatchMode=yes office3 \
-  ~/code/telegram-insights/ops/office3/telegram-insights-with-pass mcp
+claude mcp add telegram-insights -s user -- ssh -o BatchMode=yes <ssh-host> \
+  <checkout>/ops/telegram-insights-with-pass mcp
 ```
 
 ## CLI и skill без MCP
 
 `scripts/install-cli.sh [ssh-host]` ставит `~/.local/bin/telegram-insights`,
-создаёт `~/.config/telegram-insights/config.json` (`{"remote": "office3"}`), если
-его нет, и устанавливает skill `telegram-insights` (`skills/telegram-insights`).
+при указанном хосте создаёт `~/.config/telegram-insights/config.json`
+(`{"remote": "<ssh-host>"}`), если его нет, и устанавливает skill `telegram-insights` (`skills/telegram-insights`).
 
 Команды чтения `search`, `context`, `chats`, `status` работают в двух режимах:
 
-- **mcp** — запускают MCP-сервер по SSH (`--remote`, `TI_REMOTE`, `remote`) или
+- **mcp** — запускают MCP-сервер по SSH (`--remote`, `TI_REMOTE`, `remote`; на хосте
+  выполняется `remoteCommand`, по умолчанию `telegram-insights mcp`, — для
+  обёртки с `pass` укажите `<checkout>/ops/telegram-insights-with-pass mcp`) или
   любую команду (`--mcp-command`, `TI_MCP_COMMAND`, `mcpCommand`);
 - **direct** — PostgreSQL роли reader (`--db-url`, `TI_READER_DATABASE_URL`,
   `--db-url-pass`/`databaseUrlPass` — запись `pass`) и Ollama для векторизации запроса.

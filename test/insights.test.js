@@ -196,8 +196,8 @@ describe('helpers', () => {
 
   it('refuses non-local model endpoints without explicit approval', () => {
     expect(() => assertLocalRoute('http://127.0.0.1:11434')).not.toThrow();
-    expect(() => assertLocalRoute('http://192.168.88.14:30400/v1')).toThrow(/not local/);
+    expect(() => assertLocalRoute('http://10.20.30.40:30400/v1')).toThrow(/not local/);
     expect(() => assertLocalRoute('https://openrouter.ai/api')).toThrow(/not local/);
-    expect(() => assertLocalRoute('http://192.168.88.14:30400', ['192.168.88.14'])).not.toThrow();
+    expect(() => assertLocalRoute('http://10.20.30.40:30400', ['10.20.30.40'])).not.toThrow();
   });
 });
