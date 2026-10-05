@@ -3,7 +3,7 @@ vi.mock('timers/promises', () => ({
 }));
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { classifyError, computeRetryWaitSeconds, withSendRetry } from '../core/retry.js';
+import { classifyError, computeRetryWaitSeconds, withSendRetry } from '../src/telegram/retry.js';
 
 describe('classifyError', () => {
   it('classifies FLOOD_WAIT_30 as rate_limit', () => {

@@ -11,3 +11,6 @@ state/
 __pycache__/
 .pytest_cache/
 .DS_Store
+node_modules/
+coverage/
+digests/
