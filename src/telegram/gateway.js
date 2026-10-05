@@ -102,7 +102,8 @@ export function classifyTelegramError(error) {
   if (flood) {
     return new TelegramError('FLOOD_WAIT', `FLOOD_WAIT_${flood[1]}`, { waitSeconds: Number(flood[1]) });
   }
-  const code = (/([A-Z][A-Z0-9_]{3,})/.exec(text)?.[1]) ?? 'UNKNOWN';
+  const name = typeof error?.name === 'string' && error.name !== 'Error' ? error.name : null;
+  const code = (/([A-Z][A-Z0-9_]{3,})/.exec(text)?.[1]) ?? name ?? 'UNKNOWN';
   return new TelegramError(code, code);
 }
 
