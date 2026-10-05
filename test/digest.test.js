@@ -145,3 +145,12 @@ describe('automated fragments', () => {
     expect(entry.kinds[1]).toEqual({ text: 'MinIO replica lag', count: 1 });
   });
 });
+
+describe('centroid merge', () => {
+  it('merges stories that were split only by the size cap', () => {
+    const many = Array.from({ length: 5 }, (_, i) => chunk(String(i + 1), [1, 0.01 * i, 0], ['поздравляю']));
+    const stories = clusterChunks(many, { maxPerCluster: 2 });
+    expect(stories).toHaveLength(1);
+    expect(stories[0].chats.size).toBe(5);
+  });
+});
