@@ -112,9 +112,10 @@ export function buildProgram() {
   program.command('login').description('Authorize the separate Telegram Insights session')
     .option('--qr', 'log in by scanning a QR code')
     .option('--code-file <path>', 'read the login code from this file instead of the terminal')
+    .option('--sms', 'ask Telegram to resend the code by SMS')
     .action(async (opts) => {
       const config = loadConfig();
-      const loginOptions = { useQr: Boolean(opts.qr) };
+      const loginOptions = { useQr: Boolean(opts.qr), forceSms: Boolean(opts.sms) };
       if (opts.codeFile) {
         loginOptions.codeProvider = async () => {
           console.log(`Waiting for the login code in ${opts.codeFile}`);
