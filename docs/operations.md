@@ -42,7 +42,11 @@ ops/office3/telegram-insights-with-pass digest --date 2026-10-04
 ~/code/personal-ops/scripts/personalctl launchd status
 ```
 
-Расписание сводок и их отправка не включены (см. backlog).
+Ежедневный черновик: LaunchAgent `com.dapi.telegram-insights.digest` в 07:30
+МСК пишет сводку за прошлые сутки в каталог черновиков (`digest --skip-existing`;
+готовый черновик не перезаписывается). Отправка никуда не выполняется.
+Установка: `scripts/install-office3-launchagent.sh com.dapi.telegram-insights.digest`.
+Проверка службы: `status --check` (код 2, если сигнал старше 10 минут).
 
 ## Поведение и настройки
 

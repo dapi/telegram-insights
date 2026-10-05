@@ -204,6 +204,7 @@ export function buildProgram() {
     .option('--chats', 'list every chat')
     .option('--redact', 'show chat ids instead of titles')
     .option('--account <id>', 'account id when several are archived')
+    .option('--check', 'exit with code 2 if the service heartbeat is older than 10 minutes')
     .action(async (opts) => {
       const config = loadConfig();
       const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 2 });
@@ -216,6 +217,13 @@ export function buildProgram() {
         if (opts.json) {
           const chats = opts.chats ? report.chats.map((c) => (opts.redact ? { ...c, title: null, username: null } : c)) : undefined;
           console.log(JSON.stringify({ summary: report.summary, chats }, null, 2));
+          return;
+        }
+        if (opts.check) {
+          const at = report.summary.heartbeat?.at ? new Date(report.summary.heartbeat.at) : null;
+          const stale = !at || Date.now() - at.getTime() > 10 * 60_000;
+          console.log(stale ? `UNHEALTHY: heartbeat ${at ? formatLocal(at) : 'missing'}` : `OK: heartbeat ${formatLocal(at)}`);
+          if (stale) process.exitCode = 2;
           return;
         }
         printSummary(report.summary);
@@ -276,6 +284,7 @@ export function buildProgram() {
     .option('--out <path>', 'output file')
     .option('--stdout', 'print instead of writing a file')
     .option('--force', 'overwrite an existing draft')
+    .option('--skip-existing', 'exit successfully if the draft already exists (for schedules)')
     .option('--no-llm', 'extractive draft without the local model')
     .action(async (opts) => {
       const config = loadConfig();
@@ -288,6 +297,10 @@ export function buildProgram() {
           return;
         }
         const out = opts.out ?? path.join(config.digestDir, `${day}.md`);
+        if (fs.existsSync(out) && opts.skipExisting && !opts.force) {
+          console.log(JSON.stringify({ skipped: out, day }));
+          return;
+        }
         if (fs.existsSync(out) && !opts.force) throw new Error(`${out} already exists; drafts are not updated automatically (use --force)`);
         fs.mkdirSync(path.dirname(out), { recursive: true, mode: 0o700 });
         fs.writeFileSync(out, markdown, { mode: 0o600 });

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dapi.telegram-insights.digest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/danil/code/telegram-insights/ops/office3/telegram-insights-with-pass</string>
+    <string>digest</string>
+    <string>--skip-existing</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/danil/code/telegram-insights</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>7</integer>
+    <key>Minute</key>
+    <integer>30</integer>
+  </dict>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/danil/code/telegram-insights/log/digest.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/danil/code/telegram-insights/log/digest.error.log</string>
+</dict>
+</plist>
