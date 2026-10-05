@@ -1,0 +1,45 @@
+#!/bin/sh
+# Runs telegram-insights with credentials loaded from pass at call time.
+# Usage: telegram-insights-with-pass <command> [args...]
+# Secrets stay in the process environment only; nothing is written to disk.
+set -eu
+umask 077
+
+export PATH="$HOME/.local/share/mise/shims:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+repo="$HOME/code/telegram-insights"
+pg_host="${TI_PG_HOST:-192.168.88.10}"
+
+secret() {
+  pass show "$1" | head -1
+}
+
+dsn() {
+  printf 'postgres://telegram_insights_%s:%s@%s:5432/telegram_insights?sslmode=no-verify' "$1" "$(secret "telegram-insights/postgres/$1-password")" "$pg_host"
+}
+
+command="${1:-}"
+case "$command" in
+  migrate)
+    TI_OWNER_DATABASE_URL="$(dsn owner)"; export TI_OWNER_DATABASE_URL ;;
+  run|login)
+    TELEGRAM_API_ID="$(secret telegram-app/id)"; export TELEGRAM_API_ID
+    TELEGRAM_API_HASH="$(secret telegram-app/api_hash)"; export TELEGRAM_API_HASH
+    TI_ARCHIVER_DATABASE_URL="$(dsn archiver)"; export TI_ARCHIVER_DATABASE_URL
+    TI_INDEXER_DATABASE_URL="$(dsn indexer)"; export TI_INDEXER_DATABASE_URL ;;
+  index)
+    TI_INDEXER_DATABASE_URL="$(dsn indexer)"; export TI_INDEXER_DATABASE_URL ;;
+  doctor)
+    TI_OWNER_DATABASE_URL="$(dsn owner)"; export TI_OWNER_DATABASE_URL
+    TI_ARCHIVER_DATABASE_URL="$(dsn archiver)"; export TI_ARCHIVER_DATABASE_URL
+    TI_INDEXER_DATABASE_URL="$(dsn indexer)"; export TI_INDEXER_DATABASE_URL
+    TI_READER_DATABASE_URL="$(dsn reader)"; export TI_READER_DATABASE_URL ;;
+  *)
+    TI_READER_DATABASE_URL="$(dsn reader)"; export TI_READER_DATABASE_URL ;;
+esac
+
+# Telegram is reached through the LAN SOCKS proxy on office, like tgcli on office3.
+export TELEGRAM_PROXY="${TELEGRAM_PROXY:-socks5://192.168.88.10:1080}"
+export TELEGRAM_INSIGHTS_STORE="${TELEGRAM_INSIGHTS_STORE:-$HOME/Library/Application Support/telegram-insights}"
+export TI_SERVICE_HOST=office3
+
+exec node "$repo/bin/telegram-insights.js" "$@"
