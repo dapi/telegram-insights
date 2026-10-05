@@ -381,6 +381,20 @@ describe('archive sequence contract', () => {
     expect(new Date(lastPage[0].sent_at).getTime()).toBeLessThan(new Date(firstPage[0].sent_at).getTime());
   });
 
+  it('never archives the Telegram service account with login codes', async () => {
+    const clock = virtualClock();
+    const tg = standardAccount(clock);
+    tg.addChat({ chatId: '777000', peerKind: 'user', title: 'Telegram' });
+    tg.addMessage('777000', { text: 'Login code: 00000 (synthetic)', sentAt: new Date(clock.now() - 3_600_000) }, { live: false });
+    const archiver = await startArchiver(pool, tg, clock);
+    await drain(archiver);
+    tg.addMessage('777000', { text: 'Login code: 11111 (synthetic)', sentAt: new Date(clock.now()) });
+    await drain(archiver);
+    expect(await archivedIds(pool, '777000')).toEqual([]);
+    const { rows: [chat] } = await pool.query("SELECT excluded FROM archive.chats WHERE chat_id = '777000'");
+    expect(chat.excluded).toBe(true);
+  });
+
   it('excludes chats only when configured explicitly', async () => {
     const clock = virtualClock();
     const tg = standardAccount(clock);
@@ -390,5 +404,6 @@ describe('archive sequence contract', () => {
     const { summary } = await coverageReport(pool, { now: new Date(clock.now()) });
     expect(summary.chats.excluded).toBe(1);
     expect(summary.chats.total).toBe(tg.chats.size - 1);
+    expect(tg.chats.has('777000')).toBe(false);
   });
 });

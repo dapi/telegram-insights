@@ -1,6 +1,10 @@
 import { AdaptiveLimiter } from './limiter.js';
 import { ArchiveStore } from './store.js';
 
+// The official "Telegram" service account (777000) sends login codes and new
+// login alerts. They must not reach the archive, the index or agents over MCP.
+export const ALWAYS_EXCLUDED_CHATS = ['777000'];
+
 const DEFAULTS = {
   windowDays: 14,
   pageSize: 100,
@@ -52,7 +56,7 @@ export class Archiver {
   }
 
   get excluded() {
-    return new Set(this.options.excludedChats.map(String));
+    return new Set([...ALWAYS_EXCLUDED_CHATS, ...this.options.excludedChats.map(String)]);
   }
 
   // Session-level advisory lock: a second archiver for the same account refuses to start.
