@@ -35,9 +35,21 @@ function normalizedHash(text) {
   return crypto.createHash('sha1').update(norm).digest('hex');
 }
 
+function chatTopic(chunk) {
+  return `${chunk.chatId}|${chunk.topicKey ?? 0}`;
+}
+
+function addInto(sum, v) {
+  for (let i = 0; i < v.length; i += 1) sum[i] += v[i];
+  return sum;
+}
+
 // Groups chunks into stories: identical long texts (reposts, forwards) always
-// merge; otherwise chunks from different chats merge when their embeddings are close.
-export function clusterChunks(chunks, { threshold = 0.8, maxPerCluster = 8 } = {}) {
+// merge; otherwise a chunk joins the closest story centroid (running mean of
+// member embeddings) — at `sameChatThreshold` when the story already holds
+// the same chat thread, at the stricter `threshold` across chats. Each member
+// gets `centrality`: cosine to its story centroid, used to pick what the model reads.
+export function clusterChunks(chunks, { threshold = 0.8, sameChatThreshold = 0.7, maxPerCluster = 12 } = {}) {
   const parent = chunks.map((_, i) => i);
   const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const union = (a, b) => { parent[find(a)] = find(b); };
@@ -55,19 +67,21 @@ export function clusterChunks(chunks, { threshold = 0.8, maxPerCluster = 8 } = {
   for (const i of order) {
     const v = chunks[i].vector;
     if (!v) continue;
+    const key = chatTopic(chunks[i]);
     let best = null;
     for (const c of centroids) {
       if (c.members.length >= maxPerCluster) continue;
-      if (c.chats.has(chunks[i].chatId)) continue;
       const sim = cosine(v, c.vector);
-      if (sim >= threshold && (!best || sim > best.sim)) best = { c, sim };
+      const needed = c.threads.has(key) ? sameChatThreshold : threshold;
+      if (sim >= needed && (!best || sim > best.sim)) best = { c, sim };
     }
     if (best) {
       union(i, best.c.members[0]);
       best.c.members.push(i);
-      best.c.chats.add(chunks[i].chatId);
+      best.c.threads.add(key);
+      addInto(best.c.vector, v);
     } else {
-      centroids.push({ vector: v, members: [i], chats: new Set([chunks[i].chatId]) });
+      centroids.push({ vector: [...v], members: [i], threads: new Set([key]) });
     }
   }
   const groups = new Map();
@@ -77,11 +91,14 @@ export function clusterChunks(chunks, { threshold = 0.8, maxPerCluster = 8 } = {
     groups.get(root).push(chunk);
   });
   return [...groups.values()].map((members) => {
-    const chats = new Set(members.map((m) => m.chatId));
-    const messages = members.flatMap((m) => m.messages);
-    const channelPosts = members.filter((m) => m.peerKind === 'channel').length;
+    const vectors = members.map((m) => m.vector).filter(Boolean);
+    const centroid = vectors.length ? vectors.reduce((sum, v) => addInto(sum, v), new Array(vectors[0].length).fill(0)) : null;
+    const ranked = members.map((m) => ({ ...m, centrality: centroid && m.vector ? cosine(m.vector, centroid) : 0 }));
+    const chats = new Set(ranked.map((m) => m.chatId));
+    const messages = ranked.flatMap((m) => m.messages);
+    const channelPosts = ranked.filter((m) => m.peerKind === 'channel').length;
     return {
-      members,
+      members: ranked,
       chats,
       messages,
       score: 2 * chats.size + Math.log2(1 + messages.length) + 0.5 * Math.min(channelPosts, 3),
@@ -89,15 +106,29 @@ export function clusterChunks(chunks, { threshold = 0.8, maxPerCluster = 8 } = {
   }).sort((a, b) => b.score - a.score);
 }
 
-function storyPrompt(story) {
-  const lines = [];
-  for (const chunk of story.members) {
-    lines.push(`Чат «${chunk.title ?? chunk.chatId}»:`);
-    for (const m of chunk.messages.slice(0, 15)) {
-      lines.push(`[${formatTime(m.sentAt)}] ${m.sender ?? 'неизвестный'}: ${(m.text ?? '').slice(0, 500)}`);
-    }
+function renderChunk(chunk) {
+  const lines = [`Чат «${chunk.title ?? chunk.chatId}»:`];
+  for (const m of chunk.messages.slice(0, 15)) {
+    lines.push(`[${formatTime(m.sentAt)}] ${m.sender ?? 'неизвестный'}: ${(m.text ?? '').slice(0, 500)}`);
   }
-  return lines.join('\n').slice(0, 9000);
+  return lines.join('\n');
+}
+
+// The model reads the most central fragments first (closest to the story
+// centroid) within the budget, then sees them in chronological order.
+export function storyPrompt(story, { budget = 9000 } = {}) {
+  const picked = [];
+  let used = 0;
+  for (const chunk of [...story.members].sort((a, b) => (b.centrality ?? 0) - (a.centrality ?? 0))) {
+    const text = renderChunk(chunk);
+    if (picked.length && used + text.length > budget) continue;
+    picked.push({ chunk, text: text.slice(0, budget) });
+    used += text.length + 1;
+  }
+  picked.sort((a, b) => new Date(a.chunk.messages[0]?.sentAt ?? 0) - new Date(b.chunk.messages[0]?.sentAt ?? 0));
+  const body = picked.map((p) => p.text).join('\n');
+  const skipped = story.members.length - picked.length;
+  return skipped ? `${body}\n(ещё ${skipped} фрагм. сюжета не показано: менее характерные)` : body;
 }
 
 function excerpt(text, max = 220) {
@@ -123,6 +154,7 @@ async function loadChunks(pool, accountId, start, end) {
     );
     chunks.push({
       chatId: row.chat_id,
+      topicKey: Number(row.topic_key),
       title: row.title,
       peerKind: row.peer_kind,
       vector: parseVector(row.embedding),
