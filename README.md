@@ -7,9 +7,15 @@ Telegram Insights — PostgreSQL. По умолчанию он загружае�
 
 ## Текущий этап
 
-Зафиксированы [PRD](docs/prd.md), [архитектура](docs/architecture.md) и
-[первый результат — ежедневная сводка](docs/daily-digest.md). Исполняемого
-клиента и генератора пока нет. Реальные чаты не читались и не переносились.
+Реализована первая версия по [PRD](docs/prd.md): Node.js CLI
+`telegram-insights` (клиент mtcute, перенесённый из tgcli с историей Git),
+архив PostgreSQL, отдельный индекс pgvector, поиск, ответы и локальный
+черновик [ежедневной сводки](docs/daily-digest.md). Эксплуатация —
+[docs/operations.md](docs/operations.md), архитектура —
+[docs/architecture.md](docs/architecture.md).
+
+Проверка: `npm test` (нужен Docker; тесты поднимают PostgreSQL 17 + pgvector и
+работают только с синтетическими сообщениями).
 
 ## Границы
 
