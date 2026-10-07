@@ -33,12 +33,13 @@ export function orQuery(text) {
 }
 
 export class SearchService {
-  constructor({ pool, embedder = null, windowDays = 14, timeZone = 'Europe/Moscow', recency = RECENCY_DEFAULTS, now = () => Date.now() }) {
+  constructor({ pool, embedder = null, windowDays = 14, windowMonths = null, timeZone = 'Europe/Moscow', recency = RECENCY_DEFAULTS, now = () => Date.now() }) {
     this.pool = pool;
     this.recency = recency;
     this.now = now;
     this.embedder = embedder;
     this.windowDays = windowDays;
+    this.windowMonths = windowMonths;
     this.timeZone = timeZone;
   }
 
@@ -122,7 +123,7 @@ export class SearchService {
     const top = [...fused.values()].sort((a, b) => b.score - a.score).slice(0, limit);
     const results = [];
     for (const hit of top) results.push(await this.loadHit(account, hit));
-    const { summary } = await coverageReport(this.pool, { accountId: account, windowDays: this.windowDays });
+    const { summary } = await coverageReport(this.pool, { accountId: account, windowDays: this.windowDays, windowMonths: this.windowMonths });
     return {
       account,
       query,

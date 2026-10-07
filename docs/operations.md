@@ -12,7 +12,7 @@
 | Архиватор и индексатор | `telegram-insights run`, LaunchAgent `com.dapi.telegram-insights` |
 | Черновик сводки | `telegram-insights digest --skip-existing`, LaunchAgent `com.dapi.telegram-insights.digest` (07:30) |
 | Архив и индекс | PostgreSQL с pgvector, БД `telegram_insights`, роли `owner`/`archiver`/`indexer`/`reader` |
-| Сессия и черновики | `TELEGRAM_INSIGHTS_STORE` (по умолчанию `~/Library/Application Support/telegram-insights`), права 0700/0600 |
+| Сессия и черновики | `TELEGRAM_INSIGHTS_STORE` (по умолчанию `~/Library/Application Support/telegram-insights` на macOS, `~/.local/share/telegram-insights` на Linux), права 0700/0600 |
 | Логи службы | `log/` в checkout (в Git не попадают; только счётчики и коды ошибок) |
 
 ## Запуск на хосте службы
@@ -24,12 +24,19 @@
 `TELEGRAM_INSIGHTS_SERVICE_ENV`):
 
 ```sh
-TI_PG_HOST=<postgres host>                # обязательно
+TI_PG_HOST=<postgres host>                # либо локальный TI_PG_SOCKET_DIR=/run/postgresql
+TI_PG_DATABASE=telegram_insights          # необязательное имя БД
+TI_PG_PASS_PREFIX=telegram-insights/postgres
+TELEGRAM_API_ID=<app id>                  # для отдельной сессии без tgcli
+TELEGRAM_API_HASH_PASS=<pass entry>       # API hash для отдельной сессии
 TELEGRAM_PROXY=socks5://<host>:<port>     # если Telegram доступен только через прокси
+TELEGRAM_PROXY_URL_PASS=<pass entry>      # если URL прокси содержит пароль
 LLM_ROUTER_BASE_URL=http://<router>/v1    # embeddings и ответы
 ```
 
-API app для `run`/`login` берётся из конфигурации tgcli, если сессия является
+При заданных `TELEGRAM_API_ID` и `TELEGRAM_API_HASH_PASS` launcher использует
+отдельное приложение Telegram. Иначе API app для `run`/`login` берётся из
+конфигурации tgcli, если сессия является
 копией его авторизации (`scripts/copy-tgcli-session.sh`, согласованная копия
 через `sqlite3 .backup`). Оба клиента тогда используют один ключ авторизации;
 при `AUTH_KEY_DUPLICATED` или `AUTH_KEY_UNREGISTERED` в логах любой из служб
@@ -58,7 +65,9 @@ ops/telegram-insights-with-pass digest --date 2026-10-04
 
 - При первом запуске служба сначала подключает приём новых сообщений, затем
   получает все диалоги (включая архивные) и для каждого создаёт задачу на окно
-  `TI_WINDOW_DAYS` (14). Страницы идут от новых к старым; следующий чат
+  `TI_WINDOW_DAYS` (14). Для окна в целых календарных месяцах задайте
+  `TI_WINDOW_MONTHS`; оно имеет приоритет над днями, а сообщения старше границы
+  из последней страницы не сохраняются. Страницы идут от новых к старым; следующий чат
   выбирается по давности последнего обслуживания (round-robin).
 - Раз в `TI_DIALOGS_INTERVAL_MINUTES` (30) диалоги перечитываются: новые чаты
   получают задачу, а чаты, где верх истории ушёл дальше проверенного, —

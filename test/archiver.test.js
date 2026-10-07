@@ -3,7 +3,7 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { purgeExcluded } from '../src/archive/purge.js';
 import { coverageReport } from '../src/archive/status.js';
 import { createTestDatabase } from './helpers/db.js';
-import { floodWait, telegramError } from './helpers/fake-telegram.js';
+import { FakeTelegram, floodWait, telegramError } from './helpers/fake-telegram.js';
 import {
   DAY, archivedIds, drain, expectedInWindow, makeArchiver, standardAccount, startArchiver, virtualClock,
 } from './helpers/harness.js';
@@ -29,6 +29,20 @@ async function messageCount() {
 }
 
 describe('first run', () => {
+  it('stores only messages inside two calendar months, including a mixed boundary page', async () => {
+    const clock = virtualClock(Date.parse('2026-10-07T12:30:00Z'));
+    const tg = new FakeTelegram({ now: clock.now });
+    tg.addChat({ chatId: '900', title: 'Boundary' });
+    tg.addMessage('900', { text: 'older', sentAt: new Date('2026-08-06T12:30:00Z') }, { live: false });
+    tg.addMessage('900', { text: 'inside', sentAt: new Date('2026-08-08T12:30:00Z') }, { live: false });
+    tg.addMessage('900', { text: 'newer', sentAt: new Date('2026-08-09T12:30:00Z') }, { live: false });
+    const archiver = await startArchiver(pool, tg, clock, { windowMonths: 2, pageSize: 20 });
+    await drain(archiver);
+    expect(await archivedIds(pool, '900')).toEqual([2, 3]);
+    const { summary } = await coverageReport(pool, { now: new Date('2026-10-07T12:30:00Z'), windowMonths: 2 });
+    expect(summary.windowFrom).toBe('2026-08-07T12:30:00.000Z');
+  });
+
   it('creates a task for every cloud chat type and covers the 14-day window', async () => {
     const clock = virtualClock();
     const tg = standardAccount(clock);

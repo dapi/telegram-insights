@@ -5,7 +5,10 @@
 # Host-specific, non-secret settings (database host, proxy, LLM router) come
 # from a service env file outside the repository:
 #   ${TELEGRAM_INSIGHTS_SERVICE_ENV:-~/.config/telegram-insights/service.env}
-#   TI_PG_HOST=<postgres host>          required
+#   TI_PG_HOST=<postgres host>          required unless TI_PG_SOCKET_DIR is set
+#   TI_PG_SOCKET_DIR=/run/postgresql    local PostgreSQL on Linux
+#   TI_PG_DATABASE=telegram_insights    optional database name
+#   TI_PG_PASS_PREFIX=telegram-insights/postgres
 #   TELEGRAM_PROXY=socks5://host:port   optional
 #   LLM_ROUTER_BASE_URL=http://.../v1   optional, embeddings and answers
 set -eu
@@ -17,14 +20,26 @@ service_env="${TELEGRAM_INSIGHTS_SERVICE_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/
 if [ -f "$service_env" ]; then
   set -a; . "$service_env"; set +a
 fi
-pg_host="${TI_PG_HOST:?TI_PG_HOST is not set; put it into $service_env}"
+pg_database="${TI_PG_DATABASE:-telegram_insights}"
+pg_pass_prefix="${TI_PG_PASS_PREFIX:-telegram-insights/postgres}"
+case "$pg_database" in
+  *[!a-zA-Z0-9_]*|'') echo "Invalid TI_PG_DATABASE" >&2; exit 2 ;;
+esac
+if [ -z "${TI_PG_SOCKET_DIR:-}" ]; then
+  pg_host="${TI_PG_HOST:?Set TI_PG_HOST or TI_PG_SOCKET_DIR in $service_env}"
+fi
 
 secret() {
   pass show "$1" | head -1
 }
 
 dsn() {
-  printf 'postgres://telegram_insights_%s:%s@%s:5432/telegram_insights?sslmode=no-verify' "$1" "$(secret "telegram-insights/postgres/$1-password")" "$pg_host"
+  password="$(secret "$pg_pass_prefix/$1-password")"
+  if [ -n "${TI_PG_SOCKET_DIR:-}" ]; then
+    printf 'postgres://telegram_insights_%s:%s@localhost/%s?host=%s' "$1" "$password" "$pg_database" "$TI_PG_SOCKET_DIR"
+  else
+    printf 'postgres://telegram_insights_%s:%s@%s:5432/%s?sslmode=no-verify' "$1" "$password" "$pg_host" "$pg_database"
+  fi
 }
 
 command="${1:-}"
@@ -32,9 +47,17 @@ case "$command" in
   migrate|purge-excluded)
     TI_OWNER_DATABASE_URL="$(dsn owner)"; export TI_OWNER_DATABASE_URL ;;
   run|login)
-    # The session is a copy of tgcli's authorization, so use tgcli's API app.
-    eval "$(python3 -c 'import json,os,shlex;d=json.load(open(os.path.expanduser("~/Library/Application Support/tgcli/config.json")));print("TELEGRAM_API_ID="+shlex.quote(str(d["apiId"]))+"; TELEGRAM_API_HASH="+shlex.quote(d["apiHash"]))')"
+    if [ -n "${TELEGRAM_API_ID:-}" ] && [ -n "${TELEGRAM_API_HASH_PASS:-}" ]; then
+      TELEGRAM_API_HASH="$(secret "$TELEGRAM_API_HASH_PASS")"
+    else
+      # Existing macOS installation uses a copy of tgcli's authorization.
+      eval "$(python3 -c 'import json,os,shlex;d=json.load(open(os.path.expanduser("~/Library/Application Support/tgcli/config.json")));print("TELEGRAM_API_ID="+shlex.quote(str(d["apiId"]))+"; TELEGRAM_API_HASH="+shlex.quote(d["apiHash"]))')"
+    fi
     export TELEGRAM_API_ID TELEGRAM_API_HASH
+    if [ -n "${TELEGRAM_PROXY_URL_PASS:-}" ]; then
+      TELEGRAM_PROXY="$(secret "$TELEGRAM_PROXY_URL_PASS")"
+      export TELEGRAM_PROXY
+    fi
     TI_ARCHIVER_DATABASE_URL="$(dsn archiver)"; export TI_ARCHIVER_DATABASE_URL
     TI_INDEXER_DATABASE_URL="$(dsn indexer)"; export TI_INDEXER_DATABASE_URL ;;
   index)
@@ -48,6 +71,12 @@ case "$command" in
     TI_READER_DATABASE_URL="$(dsn reader)"; export TI_READER_DATABASE_URL ;;
 esac
 
-export TELEGRAM_INSIGHTS_STORE="${TELEGRAM_INSIGHTS_STORE:-$HOME/Library/Application Support/telegram-insights}"
+if [ -z "${TELEGRAM_INSIGHTS_STORE:-}" ]; then
+  case "$(uname -s)" in
+    Darwin) TELEGRAM_INSIGHTS_STORE="$HOME/Library/Application Support/telegram-insights" ;;
+    *) TELEGRAM_INSIGHTS_STORE="${XDG_DATA_HOME:-$HOME/.local/share}/telegram-insights" ;;
+  esac
+fi
+export TELEGRAM_INSIGHTS_STORE
 
 exec node "$repo/bin/telegram-insights.js" "$@"

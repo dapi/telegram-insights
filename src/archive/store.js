@@ -1,4 +1,5 @@
 import { withTransaction } from '../db.js';
+import { archiveWindowStart, withinArchiveWindow } from './window.js';
 
 const SEQ_LOCK_CLASS = 7311;
 const DAY_MS = 86_400_000;
@@ -88,9 +89,9 @@ export class ArchiveStore {
   }
 
   // Registers every dialog; new chats get a 14-day (configurable) task anchored at discovery.
-  async syncDialogs(accountId, dialogs, { windowDays, excluded = new Set() }) {
+  async syncDialogs(accountId, dialogs, { windowDays, windowMonths, excluded = new Set() }) {
     const now = this.now();
-    const windowStart = new Date(now.getTime() - windowDays * DAY_MS);
+    const windowStart = archiveWindowStart(now, { windowDays, windowMonths });
     return withTransaction(this.pool, async (client) => {
       // A dialog can be listed twice (pinned and in the main list); keep the first.
       const unique = [...new Map(dialogs.map((d) => [String(d.chatId), d])).values()]
@@ -164,9 +165,9 @@ export class ArchiveStore {
   }
 
   // A live message may come from a chat the dialogs sweep has not seen yet.
-  async ensureChat(client, accountId, chat, { windowDays }) {
+  async ensureChat(client, accountId, chat, { windowDays, windowMonths }) {
     const now = this.now();
-    const windowStart = new Date(now.getTime() - windowDays * DAY_MS);
+    const windowStart = archiveWindowStart(now, { windowDays, windowMonths });
     const { rows } = await client.query(
       `INSERT INTO archive.chats (account_id, chat_id, peer_kind, title, username)
        VALUES ($1, $2, $3, $4, $5)
@@ -204,16 +205,18 @@ export class ArchiveStore {
     return rowCount;
   }
 
-  async insertLiveBatch(accountId, items, { windowDays }) {
+  async insertLiveBatch(accountId, items, { windowDays, windowMonths }) {
+    const windowStart = archiveWindowStart(this.now(), { windowDays, windowMonths });
     return withTransaction(this.pool, async (client) => {
       let inserted = 0;
       const byChat = new Map();
       for (const { message, chat } of items) {
+        if (windowMonths != null && !withinArchiveWindow(message, windowStart)) continue;
         if (!byChat.has(chat.chatId)) byChat.set(chat.chatId, { chat, messages: [] });
         byChat.get(chat.chatId).messages.push(message);
       }
       for (const { chat, messages } of byChat.values()) {
-        await this.ensureChat(client, accountId, chat, { windowDays });
+        await this.ensureChat(client, accountId, chat, { windowDays, windowMonths });
         inserted += await this.insertMessages(client, accountId, chat.chatId, messages, 'live');
         const top = messages.reduce((acc, m) => (m.messageId > acc.messageId ? m : acc));
         await client.query(
@@ -277,7 +280,7 @@ export class ArchiveStore {
   }
 
   // Stores one history page and advances the chat checkpoint in one transaction.
-  async applyPage(accountId, task, page, { windowDays }) {
+  async applyPage(accountId, task, page, { windowDays, windowMonths }) {
     const now = this.now();
     const msgs = page.messages;
     const ids = msgs.map((m) => m.messageId);
@@ -287,9 +290,13 @@ export class ArchiveStore {
       ? new Date(Math.min(...msgs.map((m) => (m.sentAt instanceof Date ? m.sentAt : new Date(m.sentAt)).getTime())))
       : null;
     const windowStart = new Date(task.window_start);
+    const currentWindowStart = archiveWindowStart(now, { windowDays, windowMonths });
+    const insertFrom = new Date(Math.max(windowStart.getTime(), currentWindowStart.getTime()));
 
     return withTransaction(this.pool, async (client) => {
-      const inserted = await this.insertMessages(client, accountId, task.chat_id, msgs, task.kind === 'gap' ? 'gap' : 'history');
+      const toInsert = windowMonths == null ? msgs : msgs.filter((message) => withinArchiveWindow(message, insertFrom));
+      const inserted = await this.insertMessages(client, accountId, task.chat_id,
+        toInsert, task.kind === 'gap' ? 'gap' : 'history');
       const s = {
         backfill_done: task.backfill_done,
         backfill_anchor_id: num(task.backfill_anchor_id),
@@ -340,7 +347,7 @@ export class ArchiveStore {
           s.gap_target_id = Math.max(maxId ?? 0, s.gap_min_id ?? 0);
         }
         const gapDone = !msgs.length || page.complete || minId <= (s.gap_min_id ?? 0);
-        const pastWindow = oldestAt && oldestAt.getTime() < now.getTime() - windowDays * DAY_MS;
+        const pastWindow = oldestAt && oldestAt < currentWindowStart;
         if (gapDone) {
           s.covered_max_id = s.gap_target_id;
           done = true;

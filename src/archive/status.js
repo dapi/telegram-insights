@@ -1,6 +1,6 @@
 // Coverage report built only from technical metadata (no message text).
 
-const DAY_MS = 86_400_000;
+import { archiveWindowStart } from './window.js';
 
 export const STATE_LABELS = {
   loaded: 'загружено',
@@ -21,10 +21,10 @@ export async function resolveAccountId(pool, accountId = null) {
   return rows[0].account_id;
 }
 
-export async function coverageReport(pool, { accountId, windowDays = 14, now = new Date(), staleAfterMs = 2 * 3_600_000 } = {}) {
+export async function coverageReport(pool, { accountId, windowDays = 14, windowMonths = null, now = new Date(), staleAfterMs = 2 * 3_600_000 } = {}) {
   const account = await resolveAccountId(pool, accountId);
   if (!account) return { account: null, chats: [], summary: null };
-  const windowFrom = new Date(now.getTime() - windowDays * DAY_MS);
+  const windowFrom = archiveWindowStart(now, { windowDays, windowMonths });
   const { rows: chats } = await pool.query(
     `SELECT c.chat_id, c.peer_kind, c.title, c.username, c.in_dialogs, c.excluded, c.top_message_id, c.dialog_rank,
             s.state, s.window_start, s.backfill_done, s.covered_from, s.covered_max_id, s.history_exhausted,
@@ -124,6 +124,7 @@ export async function coverageReport(pool, { accountId, windowDays = 14, now = n
   const summary = {
     account,
     windowDays,
+    windowMonths,
     windowFrom: windowFrom.toISOString(),
     chats: {
       total: active.length,
@@ -163,7 +164,8 @@ export function coverageNote(summary) {
   if (!summary) return 'Покрытие неизвестно: архив ещё не инициализирован.';
   const c = summary.chats;
   const pct = Math.round(c.coveredShare * 1000) / 10;
-  const parts = [`окно ${summary.windowDays} сут.: покрыто ${c.covered} из ${c.available} доступных чатов (${pct}%)`];
+  const windowLabel = summary.windowMonths == null ? `${summary.windowDays} сут.` : `${summary.windowMonths} календ. мес.`;
+  const parts = [`окно ${windowLabel}: покрыто ${c.covered} из ${c.available} доступных чатов (${pct}%)`];
   if (c.unavailable) parts.push(`недоступно ${c.unavailable}`);
   if (c.byState.loading) parts.push(`загружается ${c.byState.loading}`);
   if (c.byState.not_checked) parts.push(`не проверено ${c.byState.not_checked}`);

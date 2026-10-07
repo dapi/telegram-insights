@@ -10,6 +10,7 @@ export const ALWAYS_EXCLUDED_CHATS = ['777000', '489000', '93372553'];
 
 const DEFAULTS = {
   windowDays: 14,
+  windowMonths: null,
   pageSize: 100,
   dialogsIntervalMs: 30 * 60_000,
   liveFlushMs: 500,
@@ -126,7 +127,7 @@ export class Archiver {
     if (this.liveFlushing) return this.liveFlushing;
     if (!this.liveBuffer.length) return 0;
     const batch = this.liveBuffer.splice(0, this.options.liveBatchSize);
-    this.liveFlushing = this.store.insertLiveBatch(this.accountId, batch, { windowDays: this.options.windowDays })
+    this.liveFlushing = this.store.insertLiveBatch(this.accountId, batch, { windowDays: this.options.windowDays, windowMonths: this.options.windowMonths })
       .then((inserted) => {
         this.stats.live += inserted;
         return inserted;
@@ -148,6 +149,7 @@ export class Archiver {
     }), this.options.requestTimeoutMs * 20);
     const result = await this.store.syncDialogs(this.accountId, dialogs, {
       windowDays: this.options.windowDays,
+      windowMonths: this.options.windowMonths,
       excluded: this.excluded,
     });
     const planned = await this.store.planGaps(this.accountId);
@@ -210,7 +212,7 @@ export class Archiver {
       return true;
     }
     await this.limiter.onSuccess();
-    const result = await this.store.applyPage(this.accountId, task, page, { windowDays: this.options.windowDays });
+    const result = await this.store.applyPage(this.accountId, task, page, { windowDays: this.options.windowDays, windowMonths: this.options.windowMonths });
     this.stats.pages += 1;
     this.stats.inserted += result.inserted;
     if (result.done) {

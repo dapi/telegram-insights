@@ -40,6 +40,7 @@ export function resolveSettings(opts = {}, env = process.env, { readPass = (entr
       ...(opts.llmRouterUrl ? { LLM_ROUTER_BASE_URL: opts.llmRouterUrl } : {}),
     }, cfg),
     windowDays: Number(pick(env.TI_WINDOW_DAYS, cfg.windowDays) ?? 14),
+    windowMonths: pick(env.TI_WINDOW_MONTHS, cfg.windowMonths) == null ? null : Number(pick(env.TI_WINDOW_MONTHS, cfg.windowMonths)),
   };
   if (opts.direct) {
     settings.remote = null;

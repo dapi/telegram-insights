@@ -88,7 +88,7 @@ export async function findChats(pool, { query, limit = 20 }) {
   }));
 }
 
-export async function archiveStatus(pool, { windowDays = 14 } = {}) {
-  const { summary } = await coverageReport(pool, { windowDays });
+export async function archiveStatus(pool, { windowDays = 14, windowMonths = null } = {}) {
+  const { summary } = await coverageReport(pool, { windowDays, windowMonths });
   return { coverage: coverageNote(summary), summary };
 }

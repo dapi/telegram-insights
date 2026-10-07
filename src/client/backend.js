@@ -14,7 +14,7 @@ export class DirectBackend {
     this.settings = settings;
     this.pool = createPool(settings.databaseUrl, { max: 2, applicationName: 'telegram-insights-cli' });
     const embedder = createEmbedder(settings.models);
-    this.search = new SearchService({ pool: this.pool, embedder, windowDays: settings.windowDays });
+    this.search = new SearchService({ pool: this.pool, embedder, windowDays: settings.windowDays, windowMonths: settings.windowMonths });
   }
 
   searchMessages(args) { return searchMessages(this.search, args); }
@@ -23,7 +23,7 @@ export class DirectBackend {
 
   findChats(args) { return findChats(this.pool, args); }
 
-  archiveStatus() { return archiveStatus(this.pool, { windowDays: this.settings.windowDays }); }
+  archiveStatus() { return archiveStatus(this.pool, { windowDays: this.settings.windowDays, windowMonths: this.settings.windowMonths }); }
 
   async close() { await this.pool.end(); }
 }

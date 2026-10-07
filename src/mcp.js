@@ -7,7 +7,7 @@ import { archiveStatus, findChats, messageContext, searchMessages } from './quer
 const json = (value) => ({ content: [{ type: 'text', text: JSON.stringify(value, null, 1) }] });
 
 // Read-only MCP surface over the archive and its search index (reader role).
-export function buildMcpServer({ pool, search, windowDays = 14 }) {
+export function buildMcpServer({ pool, search, windowDays = 14, windowMonths = null }) {
   const server = new McpServer({ name: 'telegram-insights', version: '0.1.0' });
 
   server.tool(
@@ -46,7 +46,7 @@ export function buildMcpServer({ pool, search, windowDays = 14 }) {
     'archive_status',
     'Coverage of the archive: how many chats are fully loaded for the window, message counts, index freshness, service heartbeat.',
     {},
-    async () => json(await archiveStatus(pool, { windowDays })),
+    async () => json(await archiveStatus(pool, { windowDays, windowMonths })),
   );
 
   return server;

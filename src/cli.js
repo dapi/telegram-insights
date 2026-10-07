@@ -82,7 +82,7 @@ function printChatTable(chats, { redact }) {
 
 function printSummary(s) {
   const c = s.chats;
-  console.log(`Аккаунт: ${s.account}; окно ${s.windowDays} сут. (с ${formatLocal(s.windowFrom)})`);
+  console.log(`Аккаунт: ${s.account}; окно ${s.windowMonths == null ? `${s.windowDays} сут.` : `${s.windowMonths} календ. мес.`} (с ${formatLocal(s.windowFrom)})`);
   console.log(`Чаты: всего ${c.total}, доступно ${c.available}, окно покрыто ${c.covered} (${(c.coveredShare * 100).toFixed(1)}%), недоступно ${c.unavailable}`);
   console.log(`Состояния: ${Object.entries(c.byState).map(([k, v]) => `${STATE_LABELS[k] ?? k} ${v}`).join(', ')}`);
   console.log(`По типам: ${Object.entries(c.byKind).map(([k, v]) => `${k} ${v.covered}/${v.total}`).join(', ')}`);
@@ -202,7 +202,7 @@ export function buildProgram() {
       const self = await gateway.connect();
       await archiver.init();
       await archiver.acquireLease();
-      log('started', { account: self.id, windowDays: config.archive.windowDays, embeddings: config.models.embeddingsEnabled });
+      log('started', { account: self.id, windowDays: config.archive.windowDays, windowMonths: config.archive.windowMonths, embeddings: config.models.embeddingsEnabled });
       await archiver.startLive();
       const indexing = indexer.loop({ shouldStop: () => stopping });
       await archiver.run();
@@ -297,7 +297,7 @@ export function buildProgram() {
       let chats;
       if (opts.chats) {
         if (!b.pool) throw new Error('--chats needs direct mode (--direct with a reader database URL)');
-        chats = (await coverageReport(b.pool, { windowDays: summary.windowDays })).chats;
+        chats = (await coverageReport(b.pool, { windowDays: summary.windowDays, windowMonths: summary.windowMonths })).chats;
       }
       if (opts.json) {
         return console.log(JSON.stringify({ summary, chats: chats?.map((c) => (opts.redact ? { ...c, title: null, username: null } : c)) }, null, 2));
@@ -344,7 +344,7 @@ export function buildProgram() {
       const config = loadConfig();
       const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 2 });
       try {
-        const service = new SearchService({ pool, embedder: embedderFor(config), windowDays: config.archive.windowDays });
+        const service = new SearchService({ pool, embedder: embedderFor(config), windowDays: config.archive.windowDays, windowMonths: config.archive.windowMonths });
         const { text } = await answerQuestion({ search: service, llm: chatFor(config, opts.llm), question: words.join(' '), limit: Number(opts.limit) });
         console.log(text);
       } finally {
@@ -375,7 +375,7 @@ export function buildProgram() {
       const day = range ? null : (opts.date ?? localDate(new Date(Date.now() - 86_400_000), config.timeZone));
       const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 2 });
       try {
-        const { markdown, data, meta } = await buildDigest({ pool, llm: chatFor(config, opts.llm), day, range, now, timeZone: config.timeZone, windowDays: config.archive.windowDays });
+        const { markdown, data, meta } = await buildDigest({ pool, llm: chatFor(config, opts.llm), day, range, now, timeZone: config.timeZone, windowDays: config.archive.windowDays, windowMonths: config.archive.windowMonths });
         if (opts.json) {
           console.log(JSON.stringify(data));
           return;
@@ -403,8 +403,8 @@ export function buildProgram() {
       const config = loadConfig();
       const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 3, applicationName: 'telegram-insights-mcp' });
       const { runMcpStdio } = await import('./mcp.js');
-      const search = new SearchService({ pool, embedder: embedderFor(config), windowDays: config.archive.windowDays });
-      await runMcpStdio({ pool, search, windowDays: config.archive.windowDays });
+      const search = new SearchService({ pool, embedder: embedderFor(config), windowDays: config.archive.windowDays, windowMonths: config.archive.windowMonths });
+      await runMcpStdio({ pool, search, windowDays: config.archive.windowDays, windowMonths: config.archive.windowMonths });
     });
 
   program.command('doctor').description('Check database roles, schema, models and the Telegram session (no message content)')

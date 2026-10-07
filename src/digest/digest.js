@@ -290,11 +290,11 @@ export function unreadChunks(chunks) {
     .filter((c) => c.messages.some((m) => m.text));
 }
 
-export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ, accountId = null, maxUnread = 6, awaitingLookbackHours = 72, windowDays = 14, now = new Date(), range = null }) {
+export async function buildDigest({ pool, llm = null, day, timeZone = DEFAULT_TZ, accountId = null, maxUnread = 6, awaitingLookbackHours = 72, windowDays = 14, windowMonths = null, now = new Date(), range = null }) {
   const account = await resolveAccountId(pool, accountId);
   if (!account) throw new Error('Archive is empty: no account has been archived yet');
   const { start, end } = range ?? dayRange(day, timeZone);
-  const { summary, chats } = await coverageReport(pool, { accountId: account, windowDays, now });
+  const { summary, chats } = await coverageReport(pool, { accountId: account, windowDays, windowMonths, now });
 
   const { rows: perChat } = await pool.query(
     `SELECT chat_id, count(*)::int AS messages FROM archive.messages

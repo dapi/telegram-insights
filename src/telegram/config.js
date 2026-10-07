@@ -63,6 +63,7 @@ export function loadConfig(env = process.env) {
     },
     archive: {
       windowDays: intValue(env, 'TI_WINDOW_DAYS', 14),
+      windowMonths: normalizeValue(env.TI_WINDOW_MONTHS) ? intValue(env, 'TI_WINDOW_MONTHS', null) : null,
       pageSize: intValue(env, 'TI_PAGE_SIZE', 100),
       dialogsIntervalMs: intValue(env, 'TI_DIALOGS_INTERVAL_MINUTES', 30) * 60_000,
       excludedChats: list(env.TI_EXCLUDED_CHATS),
