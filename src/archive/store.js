@@ -211,12 +211,17 @@ export class ArchiveStore {
       let inserted = 0;
       const byChat = new Map();
       for (const { message, chat } of items) {
-        if (windowMonths != null && !withinArchiveWindow(message, windowStart)) continue;
         if (!byChat.has(chat.chatId)) byChat.set(chat.chatId, { chat, messages: [] });
         byChat.get(chat.chatId).messages.push(message);
       }
-      for (const { chat, messages } of byChat.values()) {
+      for (const { chat, messages: received } of byChat.values()) {
         await this.ensureChat(client, accountId, chat, { windowDays, windowMonths });
+        const { rows: [sync] } = await client.query(
+          'SELECT requested_from FROM archive.chat_sync WHERE account_id = $1 AND chat_id = $2', [accountId, chat.chatId],
+        );
+        const liveFrom = sync.requested_from ? new Date(Math.min(windowStart.getTime(), new Date(sync.requested_from).getTime())) : windowStart;
+        const messages = windowMonths == null ? received : received.filter((m) => withinArchiveWindow(m, liveFrom));
+        if (!messages.length) continue;
         inserted += await this.insertMessages(client, accountId, chat.chatId, messages, 'live');
         const top = messages.reduce((acc, m) => (m.messageId > acc.messageId ? m : acc));
         await client.query(
@@ -227,6 +232,55 @@ export class ArchiveStore {
         );
       }
       return inserted;
+    });
+  }
+
+  // Extend just one discovered chat. Keep the cursor, existing coverage and all
+  // server/error backoffs. Repeated requests never shorten an earlier target.
+  async requestBackfill(accountId, chatId, from) {
+    const requested = new Date(from);
+    if (!Number.isFinite(requested.getTime()) || requested > this.now()) {
+      throw new Error('Backfill --from must be a valid date in the past');
+    }
+    return withTransaction(this.pool, async (client) => {
+      const { rows: [chat] } = await client.query(
+        `SELECT s.*, c.excluded, c.in_dialogs FROM archive.chat_sync s
+         JOIN archive.chats c USING (account_id, chat_id)
+         WHERE s.account_id = $1 AND s.chat_id = $2 FOR UPDATE OF s`,
+        [accountId, chatId],
+      );
+      if (!chat) throw new Error('Chat is not in the archive');
+      if (chat.excluded || !chat.in_dialogs) throw new Error('Chat is excluded or no longer in dialogs');
+      const target = new Date(Math.min(requested.getTime(), chat.requested_from ? new Date(chat.requested_from).getTime() : Infinity));
+      const windowStart = new Date(Math.min(new Date(chat.window_start).getTime(), target.getTime()));
+      const extending = windowStart < new Date(chat.window_start);
+      const done = Boolean(chat.backfill_done && !extending);
+      let offset = chat.backfill_offset_id;
+      if (chat.backfill_done && extending) {
+        // Calendar-window filtering may have discarded the tail of the last
+        // fetched page. Resume from the oldest RETAINED id, replaying that tail.
+        const { rows: [oldest] } = await client.query(
+          'SELECT min(message_id) AS id FROM archive.messages WHERE account_id = $1 AND chat_id = $2',
+          [accountId, chatId],
+        );
+        offset = oldest.id;
+      }
+      await client.query(
+        `UPDATE archive.chat_sync SET requested_from = $3, window_start = $4, backfill_done = $5,
+           state = CASE WHEN state IN ('rate_limited', 'error', 'unavailable') THEN state
+                        WHEN $5 THEN 'loaded' ELSE 'loading' END, updated_at = $6,
+           backfill_offset_id = $7, history_exhausted = CASE WHEN $8 THEN false ELSE history_exhausted END
+         WHERE account_id = $1 AND chat_id = $2`,
+        [accountId, chatId, target, windowStart, done, this.now(), offset, extending],
+      );
+      await client.query(
+        `INSERT INTO archive.events (account_id, chat_id, kind, detail) VALUES ($1, $2, 'backfill_requested', $3)`,
+        [accountId, chatId, JSON.stringify({ from: target.toISOString() })],
+      );
+      return { accountId: String(accountId), chatId: String(chatId), requestedFrom: target.toISOString(),
+        configuredFrom: windowStart.toISOString(), backfillPending: !done,
+        coveredFrom: chat.covered_from ? new Date(chat.covered_from).toISOString() : null,
+        historyExhausted: extending ? false : chat.history_exhausted };
     });
   }
 
@@ -247,7 +301,7 @@ export class ArchiveStore {
     if (!row) return null;
     return {
       ...row,
-      kind: row.backfill_done ? 'gap' : 'backfill',
+      kind: row.gap_min_id !== null ? 'gap' : 'backfill',
     };
   }
 
@@ -262,7 +316,7 @@ export class ArchiveStore {
               updated_at = $2
        FROM archive.chats c
        WHERE c.account_id = s.account_id AND c.chat_id = s.chat_id AND s.account_id = $1
-         AND s.backfill_done AND s.gap_min_id IS NULL AND NOT c.excluded AND c.in_dialogs
+         AND s.covered_max_id IS NOT NULL AND s.gap_min_id IS NULL AND NOT c.excluded AND c.in_dialogs
          AND (${chatIds ? 'true' : 'COALESCE(c.top_message_id, 0) > COALESCE(s.covered_max_id, 0)'}) ${filter}`,
       params,
     );
@@ -289,26 +343,32 @@ export class ArchiveStore {
     const oldestAt = msgs.length
       ? new Date(Math.min(...msgs.map((m) => (m.sentAt instanceof Date ? m.sentAt : new Date(m.sentAt)).getTime())))
       : null;
-    const windowStart = new Date(task.window_start);
-    const currentWindowStart = archiveWindowStart(now, { windowDays, windowMonths });
-    const insertFrom = new Date(Math.max(windowStart.getTime(), currentWindowStart.getTime()));
-
     return withTransaction(this.pool, async (client) => {
-      const toInsert = windowMonths == null ? msgs : msgs.filter((message) => withinArchiveWindow(message, insertFrom));
+      const { rows: [current] } = await client.query(
+        'SELECT * FROM archive.chat_sync WHERE account_id = $1 AND chat_id = $2 FOR UPDATE',
+        [accountId, task.chat_id],
+      );
+      const windowStart = new Date(current.window_start);
+      const globalStart = archiveWindowStart(now, { windowDays, windowMonths });
+      const currentWindowStart = current.requested_from
+        ? new Date(Math.min(globalStart.getTime(), new Date(current.requested_from).getTime())) : globalStart;
+      const insertFrom = new Date(Math.max(windowStart.getTime(), currentWindowStart.getTime()));
+      const toInsert = windowMonths == null || current.requested_from
+        ? msgs : msgs.filter((message) => withinArchiveWindow(message, insertFrom));
       const inserted = await this.insertMessages(client, accountId, task.chat_id,
         toInsert, task.kind === 'gap' ? 'gap' : 'history');
       const s = {
-        backfill_done: task.backfill_done,
-        backfill_anchor_id: num(task.backfill_anchor_id),
-        backfill_offset_id: num(task.backfill_offset_id),
-        covered_min_id: num(task.covered_min_id),
-        covered_max_id: num(task.covered_max_id),
-        covered_from: task.covered_from ? new Date(task.covered_from) : null,
-        history_exhausted: task.history_exhausted,
-        gap_min_id: num(task.gap_min_id),
-        gap_offset_id: num(task.gap_offset_id),
-        gap_target_id: num(task.gap_target_id),
-        last_reconciled_at: task.last_reconciled_at,
+        backfill_done: current.backfill_done,
+        backfill_anchor_id: num(current.backfill_anchor_id),
+        backfill_offset_id: num(current.backfill_offset_id),
+        covered_min_id: num(current.covered_min_id),
+        covered_max_id: num(current.covered_max_id),
+        covered_from: current.covered_from ? new Date(current.covered_from) : null,
+        history_exhausted: current.history_exhausted,
+        gap_min_id: num(current.gap_min_id),
+        gap_offset_id: num(current.gap_offset_id),
+        gap_target_id: num(current.gap_target_id),
+        last_reconciled_at: current.last_reconciled_at,
       };
       let done = false;
       if (task.kind === 'backfill') {
@@ -340,7 +400,8 @@ export class ArchiveStore {
         }
         if (done) {
           s.backfill_done = true;
-          s.last_reconciled_at = now;
+          // A lower-history extension has not verified the top since its anchor.
+          if (!current.requested_from || first || !s.last_reconciled_at) s.last_reconciled_at = now;
         }
       } else {
         if (s.gap_target_id === null) {
@@ -367,6 +428,10 @@ export class ArchiveStore {
           s.gap_target_id = null;
           s.last_reconciled_at = now;
         }
+      }
+      // A filtered boundary page verifies only the range retained in the archive.
+      if (task.kind === 'backfill' && toInsert.length < msgs.length && s.covered_from < insertFrom) {
+        s.covered_from = insertFrom;
       }
       const state = s.backfill_done ? 'loaded' : 'loading';
       await client.query(

@@ -54,6 +54,17 @@ describe('command line', () => {
     expect(json.summary.chats.covered).toBe(json.summary.chats.available);
   });
 
+  it('backfill persists a target for one chat and validates its arguments', async () => {
+    const from = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    const result = JSON.parse((await cli('backfill', '--chat', '-4001', '--from', from)).stdout);
+    expect(result.chatId).toBe('-4001');
+    expect(result.requestedFrom).toBe(from);
+    expect(result.backfillPending).toBe(false);
+    await expect(cli('backfill', '--chat', 'no-id', '--from', from)).rejects.toThrow('numeric');
+    await expect(cli('backfill', '--chat', '-4001', '--from', '2026-01-01T00:00:00')).rejects.toThrow('time zone');
+    await expect(cli('backfill', '--chat', '-4001', '--from', '2099-01-01')).rejects.toThrow('past');
+  });
+
   it('search returns references that show can open', async () => {
     const { stdout } = await cli('search', 'релиз', 'мобильного', 'приложения', '--json');
     const found = JSON.parse(stdout);

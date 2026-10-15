@@ -59,3 +59,14 @@ telegram-insights context tgi:<chat_id>/<message_id> --before 10 --after 10
 - Message content is private: do not paste it into commits, public pages or
   external services.
 - No sending, editing or live reads — use the `tgcli` skill for that.
+
+## Более глубокая история одного чата
+
+По отдельному поручению о дозагрузке используйте на хосте службы
+`ops/telegram-insights-with-pass backfill --chat <id> --from <ISO-дата-с-часовым-поясом>`.
+Это запись цели в очередь PostgreSQL, не запуск отдельного Telegram-клиента.
+Дальше проверяйте `status --chats --json`: `requestedFrom` и
+`requestedCovered` относятся к адресной цели, `coveredFrom` — к фактической
+границе, `backfillPending` — к незавершённому проходу. Учитывайте `gapPending`,
+`verifiedTo`, `stale` и лимиты Telegram. Не расширяйте общее окно всех чатов
+ради одного запроса. MCP read-only; команду вызывают штатным wrapper по SSH.

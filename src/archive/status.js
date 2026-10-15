@@ -27,7 +27,7 @@ export async function coverageReport(pool, { accountId, windowDays = 14, windowM
   const windowFrom = archiveWindowStart(now, { windowDays, windowMonths });
   const { rows: chats } = await pool.query(
     `SELECT c.chat_id, c.peer_kind, c.title, c.username, c.in_dialogs, c.excluded, c.top_message_id, c.dialog_rank,
-            s.state, s.window_start, s.backfill_done, s.covered_from, s.covered_max_id, s.history_exhausted,
+            s.state, s.window_start, s.requested_from, s.backfill_done, s.backfill_offset_id, s.covered_from, s.covered_max_id, s.history_exhausted,
             s.gap_min_id IS NOT NULL AS gap_pending, s.pages_fetched, s.messages_fetched, s.last_page_at,
             s.last_reconciled_at, s.flood_wait_until, s.error_code, s.error_count, s.next_attempt_at,
             (SELECT count(*) FROM archive.messages m WHERE m.account_id = c.account_id AND m.chat_id = c.chat_id) AS archived,
@@ -42,8 +42,11 @@ export async function coverageReport(pool, { accountId, windowDays = 14, windowM
     if (!row.in_dialogs) state = 'left';
     if (row.excluded) state = 'excluded';
     const coveredFrom = row.covered_from ? new Date(row.covered_from) : null;
-    const windowCovered = Boolean(row.backfill_done && (row.history_exhausted || (coveredFrom && coveredFrom <= windowFrom)
-      || (coveredFrom && coveredFrom <= new Date(row.window_start))));
+    const configuredFrom = row.window_start ? new Date(row.window_start) : windowFrom;
+    const requestedFrom = row.requested_from ? new Date(row.requested_from) : null;
+    // The global rolling window and a chat's fixed history target are distinct.
+    const windowCovered = Boolean((row.history_exhausted && configuredFrom <= windowFrom) || (coveredFrom && coveredFrom <= windowFrom));
+    const requestedCovered = requestedFrom ? Boolean(row.backfill_done && (row.history_exhausted || (coveredFrom && coveredFrom <= requestedFrom))) : null;
     const reconciledAt = row.last_reconciled_at ? new Date(row.last_reconciled_at) : null;
     return {
       chatId: row.chat_id,
@@ -53,6 +56,11 @@ export async function coverageReport(pool, { accountId, windowDays = 14, windowM
       state,
       stateLabel: STATE_LABELS[state] ?? state,
       windowCovered,
+      configuredFrom: configuredFrom.toISOString(),
+      requestedFrom: requestedFrom?.toISOString() ?? null,
+      requestedCovered,
+      backfillPending: !row.backfill_done,
+      backfillOffsetId: row.backfill_offset_id ?? null,
       coveredFrom: coveredFrom?.toISOString() ?? null,
       historyExhausted: row.history_exhausted ?? false,
       verifiedTo: reconciledAt?.toISOString() ?? null,
@@ -135,6 +143,8 @@ export async function coverageReport(pool, { accountId, windowDays = 14, windowM
       byState,
       byKind,
       gapPending: active.filter((c) => c.gapPending).length,
+      historyRequests: active.filter((c) => c.requestedFrom).length,
+      historyPending: active.filter((c) => c.requestedFrom && !c.requestedCovered).length,
       stale: active.filter((c) => c.stale).length,
       left: byState.left ?? 0,
       excluded: byState.excluded ?? 0,

@@ -3,10 +3,11 @@ import path from 'node:path';
 import { Command } from 'commander';
 
 import { Archiver } from './archive/archiver.js';
+import { ArchiveStore } from './archive/store.js';
 import { createBackend } from './client/backend.js';
 import { resolveSettings } from './client/settings.js';
 import { configPath, readConfigFile } from './user-config.js';
-import { coverageReport, STATE_LABELS } from './archive/status.js';
+import { coverageReport, resolveAccountId, STATE_LABELS } from './archive/status.js';
 import { createPool, migrate } from './db.js';
 import { purgeExcluded } from './archive/purge.js';
 import { buildDigest } from './digest/digest.js';
@@ -70,6 +71,8 @@ function printChatTable(chats, { redact }) {
     const name = redact ? `${c.kind}:${c.chatId}` : `${c.title ?? c.chatId}`;
     const coverage = c.windowCovered ? 'окно покрыто' : 'окно не покрыто';
     const extra = [
+      c.requestedFrom ? `история с ${formatLocal(c.requestedFrom)}: ${c.requestedCovered ? 'покрыта' : 'дозагрузка'}` : null,
+      c.coveredFrom ? `проверено с ${formatLocal(c.coveredFrom)}` : null,
       c.verifiedTo ? `сверено ${formatLocal(c.verifiedTo)}` : null,
       c.gapPending ? 'ожидает сверки' : null,
       c.floodWaitUntil ? `пауза до ${formatLocal(c.floodWaitUntil)}` : null,
@@ -129,6 +132,27 @@ export function buildProgram() {
       await pool.end();
     }
   });
+
+  program.command('backfill').description('Persist a deeper history target for one chat (archiver role, on the service host)')
+    .requiredOption('--chat <id>', 'one discovered chat id')
+    .requiredOption('--from <date>', 'inclusive lower bound, ISO 8601 with time zone or YYYY-MM-DD (UTC)')
+    .option('--account <id>', 'account if more than one is archived')
+    .action(async (opts) => {
+      if (!/^-?\d+$/.test(opts.chat)) throw new Error('--chat must be a numeric chat id');
+      if (!/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))?$/.test(opts.from)) {
+        throw new Error('--from needs YYYY-MM-DD (UTC) or an ISO timestamp with time zone');
+      }
+      const config = loadConfig();
+      const pool = createPool(requireUrl(config.db.archiver, 'TI_ARCHIVER_DATABASE_URL'), { max: 1 });
+      try {
+        const account = await resolveAccountId(pool, opts.account);
+        if (!account) throw new Error('Archive has no account');
+        const result = await new ArchiveStore(pool).requestBackfill(account, opts.chat, opts.from);
+        console.log(JSON.stringify(result, null, 2));
+      } finally {
+        await pool.end();
+      }
+    });
 
   program.command('purge-excluded').description('Delete stored messages and index chunks of excluded chats (owner role)').action(async () => {
     const config = loadConfig();

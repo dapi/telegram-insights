@@ -60,6 +60,8 @@ case "$command" in
     fi
     TI_ARCHIVER_DATABASE_URL="$(dsn archiver)"; export TI_ARCHIVER_DATABASE_URL
     TI_INDEXER_DATABASE_URL="$(dsn indexer)"; export TI_INDEXER_DATABASE_URL ;;
+  backfill)
+    TI_ARCHIVER_DATABASE_URL="$(dsn archiver)"; export TI_ARCHIVER_DATABASE_URL ;;
   index)
     TI_INDEXER_DATABASE_URL="$(dsn indexer)"; export TI_INDEXER_DATABASE_URL ;;
   doctor)
