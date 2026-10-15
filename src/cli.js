@@ -431,6 +431,15 @@ export function buildProgram() {
       await runMcpStdio({ pool, search, windowDays: config.archive.windowDays, windowMonths: config.archive.windowMonths });
     });
 
+  program.command('mcp-http').description('Serve a private Unix-socket MCP upstream for an OAuth gateway')
+    .action(async () => {
+      const config = loadConfig();
+      const pool = createPool(requireUrl(config.db.reader, 'TI_READER_DATABASE_URL'), { max: 3, applicationName: 'telegram-insights-mcp-http' });
+      const { runMcpHttp } = await import('./mcp.js');
+      const search = new SearchService({ pool, embedder: embedderFor(config), windowDays: config.archive.windowDays, windowMonths: config.archive.windowMonths });
+      await runMcpHttp({ pool, search, windowDays: config.archive.windowDays, windowMonths: config.archive.windowMonths }, { socketPath: process.env.TI_MCP_SOCKET });
+    });
+
   program.command('doctor').description('Check database roles, schema, models and the Telegram session (no message content)')
     .action(async () => {
       const config = loadConfig();

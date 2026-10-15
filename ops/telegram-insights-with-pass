@@ -50,8 +50,15 @@ case "$command" in
     if [ -n "${TELEGRAM_API_ID:-}" ] && [ -n "${TELEGRAM_API_HASH_PASS:-}" ]; then
       TELEGRAM_API_HASH="$(secret "$TELEGRAM_API_HASH_PASS")"
     else
-      # Existing macOS installation uses a copy of tgcli's authorization.
-      eval "$(python3 -c 'import json,os,shlex;d=json.load(open(os.path.expanduser("~/Library/Application Support/tgcli/config.json")));print("TELEGRAM_API_ID="+shlex.quote(str(d["apiId"]))+"; TELEGRAM_API_HASH="+shlex.quote(d["apiHash"]))')"
+      # A copied tgcli session must use the same Telegram API app.
+      if [ -z "${TI_TGCLI_STORE:-}" ]; then
+        case "$(uname -s)" in
+          Darwin) TI_TGCLI_STORE="$HOME/Library/Application Support/tgcli" ;;
+          *) TI_TGCLI_STORE="${XDG_DATA_HOME:-$HOME/.local/share}/tgcli" ;;
+        esac
+      fi
+      export TI_TGCLI_STORE
+      eval "$(python3 -c 'import json,os,shlex;d=json.load(open(os.path.join(os.environ["TI_TGCLI_STORE"],"config.json")));print("TELEGRAM_API_ID="+shlex.quote(str(d["apiId"]))+"; TELEGRAM_API_HASH="+shlex.quote(d["apiHash"]))')"
     fi
     export TELEGRAM_API_ID TELEGRAM_API_HASH
     if [ -n "${TELEGRAM_PROXY_URL_PASS:-}" ]; then

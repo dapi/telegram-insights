@@ -1,5 +1,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createServer } from 'node:http';
+import { chmodSync } from 'node:fs';
 import { z } from 'zod';
 
 import { archiveStatus, findChats, messageContext, searchMessages } from './query.js';
@@ -55,4 +58,39 @@ export function buildMcpServer({ pool, search, windowDays = 14, windowMonths = n
 export async function runMcpStdio(deps) {
   const server = buildMcpServer(deps);
   await server.connect(new StdioServerTransport());
+}
+
+// Private upstream for an authenticating reverse proxy. The Unix socket is
+// owner-only because this listener has no authentication of its own.
+export async function runMcpHttp(deps, { socketPath } = {}) {
+  if (!socketPath) throw new Error('TI_MCP_SOCKET is required');
+  const httpServer = createServer(async (req, res) => {
+    if (req.url === '/health' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"status":"ok"}');
+      return;
+    }
+    if (req.url !== '/mcp' || req.method !== 'POST') {
+      res.writeHead(404);
+      res.end();
+      return;
+    }
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const server = buildMcpServer(deps);
+    try {
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch {
+      if (!res.headersSent) res.writeHead(500);
+      if (!res.writableEnded) res.end();
+    } finally {
+      await server.close();
+    }
+  });
+  await new Promise((resolve, reject) => {
+    httpServer.once('error', reject);
+    httpServer.listen(socketPath, resolve);
+  });
+  chmodSync(socketPath, 0o600);
+  return httpServer;
 }

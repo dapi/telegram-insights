@@ -38,7 +38,8 @@ LLM_ROUTER_BASE_URL=http://<router>/v1    # embeddings и ответы
 отдельное приложение Telegram. Иначе API app для `run`/`login` берётся из
 конфигурации tgcli, если сессия является
 копией его авторизации (`scripts/copy-tgcli-session.sh`, согласованная копия
-через `sqlite3 .backup`). Оба клиента тогда используют один ключ авторизации;
+SQLite). Скрипт работает на macOS и Linux, не удаляет исходник и не
+перезаписывает существующую копию. Оба клиента тогда используют один ключ авторизации;
 при `AUTH_KEY_DUPLICATED` или `AUTH_KEY_UNREGISTERED` в логах любой из служб
 остановить Telegram Insights. Альтернатива — отдельная сессия: `login
 --qr-file` и подтверждение `scripts/approve-login-with-session.js`; аккаунт с
